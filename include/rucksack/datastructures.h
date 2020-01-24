@@ -1,9 +1,6 @@
 #pragma once
 
-#include "../high_level_api/Node.h"
-//#include "../msg/std_msgs__String.msg.h"
-
-#include <string>
+#include <stdint.h>
 
 namespace rucksack
 {
