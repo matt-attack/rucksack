@@ -7,6 +7,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 #include <stdio.h>
 
@@ -29,6 +30,11 @@ public:
 
 	// returns the block id that we read in
 	char* read_block(char& out_opcode);
+
+	inline bool is_open()
+	{
+		return f_ ? true : false;
+	}
 
 	inline void close()
 	{
@@ -88,5 +94,35 @@ public:
 	{
 		fclose(f_);
 	}
+};
+
+class SackReader
+{
+	struct ChannelDetails
+	{
+		std::string topic;
+		std::string type;
+		ps_message_definition_t definition;
+	};
+	std::vector<ChannelDetails> channels_;
+
+	Sack data_;
+
+	char* current_chunk_;
+	unsigned int current_offset_;
+public:
+
+	~SackReader();
+
+
+	bool open(const std::string& file);
+	void close();
+
+	const void* read(rucksack::MessageHeader const *& out_hdr, ps_message_definition_t const*& out_def);
+
+private:
+
+	bool get_next_chunk();
+	void handle_connection_header(const char* chunk);
 };
 }

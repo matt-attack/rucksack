@@ -147,15 +147,12 @@ void record(const std::string& file, pubsub::ArgParser& parser)
 				char buf[1500];
 				int def_len = ps_serialize_message_definition(buf, &chunk.channel->sub.received_message_def);
 
-				int data_length = def_len + chunk.channel->topic.type.length() + 1 + chunk.channel->topic.topic.length() + 1;
+				int data_length = def_len + chunk.channel->topic.topic.length() + 1;
 				header.length_bytes = data_length + sizeof(header);
 				fwrite(&header, sizeof(header), 1, f);
 
 				// then goes the topic name string
 				fwrite(chunk.channel->topic.topic.c_str(), 1, chunk.channel->topic.topic.length() + 1, f);
-
-				// the type name string 
-				fwrite(chunk.channel->topic.type.c_str(), 1, chunk.channel->topic.type.length() + 1, f);
 
 				// then the message definition
 				fwrite(buf, def_len, 1, f);
@@ -407,10 +404,9 @@ void info(const std::string& file)
 
 			// read in the details about this topic/connection
 			const char* topic = &chunk[sizeof(rucksack::ConnectionHeader)];
-			const char* type = &chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1];
 
 			ps_message_definition_t def;
-			ps_deserialize_message_definition(&chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + strlen(type) + 2], &def);
+			ps_deserialize_message_definition(&chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1], &def);
 
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
@@ -423,7 +419,7 @@ void info(const std::string& file)
 
 			ChannelInfo details;
 			details.topic = topic;
-			details.type = type;
+			details.type = def.name;
 			details.count = 0;
 			details.hash = def.hash;
 			channels.push_back(details);
@@ -472,8 +468,8 @@ void info(const std::string& file)
 
 	pubsub::Duration duration = pubsub::Time(last_time) - pubsub::Time(header.start_time);
 	printf("duration:   %lfs\n", duration.toSec());
-	printf("start:      %lf\n", pubsub::Time(header.start_time).toSec());
-	printf("end:        %lf\n", pubsub::Time(last_time).toSec());
+	printf("start:      %s\n", pubsub::Time(header.start_time).toString().c_str());
+	printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
 	printf("chunks:     %u\n", n_chunks);
 	//printf("size:       %d bytes\n", size);
 
@@ -507,7 +503,24 @@ void info(const std::string& file)
 // todo print out in order
 void print(const std::string& file)
 {
-	rucksack::Sack sack;
+	rucksack::SackReader sack;
+	if (!sack.open(file))
+	{
+		printf("ERROR: Opening sack failed!\n");
+		return;
+	}
+
+	rucksack::MessageHeader const* hdr;
+	ps_message_definition_t const* def;
+	while (const void* msg = sack.read(hdr, def))
+	{
+		ps_deserialize_print(msg, def);
+		printf("------------\n");
+	}
+
+	return;
+
+	/*rucksack::Sack sack;
 	if (!sack.open(file))
 	{
 		printf("ERROR: Opening sack failed!\n");
@@ -580,7 +593,7 @@ void print(const std::string& file)
 			}
 		}
 		delete chunk;
-	}
+	}*/
 }
 
 //then need to be able to play it back with accurate timing
@@ -640,13 +653,10 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 			// read in the details about this topic/connection
 			const char* topic = &chunk[sizeof(rucksack::ConnectionHeader)];
-			const char* type = &chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1];
 
 			ps_message_definition_t def;
-			ps_deserialize_message_definition(&chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + strlen(type) + 2], &def);
-			// give the type a name
-			def.name = new char[strlen(type) + 1];
-			strcpy(def.name, type);
+			ps_deserialize_message_definition(&chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1], &def);
+
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
 			// insert this into our header list
@@ -662,7 +672,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			details.definition = std::make_shared<ps_message_definition_t>(def);			
 			details.topic = std::shared_ptr<char[]>(new char[strlen(topic) + 1]);
 			strcpy(details.topic.get(), topic);
-			details.type = type;
+			details.type = def.name;
 			details.publisher = new ps_pub_t;
 			// create the publisher
 			// todo handle latched
@@ -802,16 +812,16 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			ps_sleep(std::max<int>(dt, 0));
 		}
 
-		// for the moment, lets just publish everything immediately
 		ps_msg_t msg;
 		ps_msg_alloc(hdr->length, &msg);
 		memcpy(ps_get_msg_start(msg.data), data, hdr->length);
 		ps_pub_publish(index[i].channel->publisher, &msg);
 
+		// todo spin less often
 		ps_node_spin(&node);
 
 		// todo print less often
-		printf("\r [RUNNING]  Sack Time: %13.6f   Duration: %.6f / %.6f               \r",
+		printf("\r [PLAYING]  Sack Time: %13.6f   Duration: %.6f / %.6f               \r",
 			pubsub::Time(hdr->time).toSec(),
 			(pubsub::Time(hdr->time) - start_time).toSec(),
 			length);
@@ -853,9 +863,10 @@ int main(int argc, char** argv)
 
 	pubsub::ArgParser parser;
 
+	//print("C:/Users/space/Desktop/pubsub_proto/build/x86-Debug/rucksack/test.sack");
 	//parser.AddMulti({ "r" }, "Rate to play the bag at.", "1.0");
 	//parser.AddMulti({ "s" }, "Offset to start playing the bag at.", "0.0");
-	//play("C:/Users/space/Desktop/pubsub_proto/build/x86-Debug/rucksack/test.sack", parser);
+	//play("C:/Users/space/Desktop/pubsub_proto/build/x86-Debug/rucksack/test.txt", parser);
 	//return 0;
 	if (verb == "record")
 	{

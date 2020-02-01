@@ -10,11 +10,10 @@ add_library(librucksack
   "src/rucksack.cpp"
 )
 target_include_directories(librucksack PUBLIC include/ ${pubsub_INCLUDE_DIRS})
-target_link_libraries(librucksack ${pubsub_LIBRARIES})
+target_link_libraries(librucksack pubsub ${pubsub_LIBRARIES})
 set_property(TARGET librucksack PROPERTY CXX_STANDARD 11)
 
 add_executable(rucksack "tools/rucksack.cpp")
 target_include_directories(rucksack PUBLIC include/ ${pubsub_INCLUDE_DIRS})
 target_link_libraries(rucksack pubsub_cpp librucksack ${pubsub_LIBRARIES})
-
 set_property(TARGET rucksack PROPERTY CXX_STANDARD 11)
