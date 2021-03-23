@@ -1,6 +1,8 @@
 
 #include <rucksack/rucksack.h>
 
+#include <cstring>
+
 #undef max
 
 namespace rucksack
@@ -39,6 +41,8 @@ bool Sack::open(const std::string& file)
 		//bad file
 
 		fclose(f_);
+        f_ = 0;
+
 		return false;
 	}
 
@@ -55,7 +59,7 @@ char* Sack::read_block(char& out_opcode)
 	}
 
 	// if we hit either of these cases, we probably hit the end
-	if (feof(f_) || bheader.op_code > 0x02)
+	if (feof(f_) || bheader.op_code > rucksack::constants::OpCodeMax)
 	{
 		return 0;
 	}
@@ -142,18 +146,18 @@ const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ps_messag
 	}
 
 	// okay, now we have a chunk, read from it
-	rucksack::DataChunk* header = (rucksack::DataChunk*)current_chunk_;
+	rucksack::DataChunk* chunk = (rucksack::DataChunk*)current_chunk_;
 
-	if (header->connection_id >= channels_.size())
+	if (chunk->connection_id >= channels_.size())
 	{
 		printf("ERROR: Got data chunk with out-of-range channel id!");
 		return 0;
 	}
 
 	// todo maybe should use a map?
-	ChannelDetails* details = &channels_[header->connection_id];
+	ChannelDetails* details = &channels_[chunk->connection_id];
 
-	if (current_offset_ >= header->length_bytes)
+	if (current_offset_ >= chunk->header.length_bytes)
 	{
 		// get new chunk, we hit the end
 		delete[] current_chunk_;

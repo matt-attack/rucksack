@@ -14,21 +14,23 @@
 namespace rucksack
 {
 // wraps around a rucksack for low level parsing
+// enables access at the chunk level
 class Sack
 {
 	FILE* f_;
 
 	rucksack::Header header_;
 public:
-	Sack();
 
+	Sack();
 	~Sack();
 
-	bool create(const std::string& file);
-
+    // Opens a bag file with the given name for reading.
+    // Returns true if successful
 	bool open(const std::string& file);
 
-	// returns the block id that we read in
+    // Reads in the next chunk from the bag file.
+	// Returns a copy of the block id that we read in, or zero if finished. (Delete when done)
 	char* read_block(char& out_opcode);
 
 	inline bool is_open()
@@ -38,9 +40,15 @@ public:
 
 	inline void close()
 	{
-		fclose(f_);
+        if (f_)
+        {
+		    fclose(f_);
+            f_ = 0;
+        }
 	}
 
+    // Gets the header for the active file
+    // Returns the header of the currently open file
 	inline const rucksack::Header& get_header()
 	{
 		return header_;
@@ -92,7 +100,10 @@ public:
 
 	inline void close()
 	{
-		fclose(f_);
+        if (f_)
+        {
+		    fclose(f_);
+        }
 	}
 };
 
@@ -114,10 +125,14 @@ public:
 
 	~SackReader();
 
-
+    // Opens a bag file with the given name.
+    // Returns true if successful
 	bool open(const std::string& file);
+
+    // Closes the file.
 	void close();
 
+    // Note that this does not read in time order. It reads out entire chunks at a time (same message).
 	const void* read(rucksack::MessageHeader const *& out_hdr, ps_message_definition_t const*& out_def);
 
 private:
