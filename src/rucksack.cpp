@@ -80,7 +80,7 @@ SackReader::~SackReader()
 	close();
 }
 
-bool SackWriter::create(const std::string& file, pubsub::Time start)
+bool SackWriter::create(const std::string& file, pubsub::Time start, uint32_t chunk_size)
 {
 	if (f_)
 	{
@@ -94,6 +94,8 @@ bool SackWriter::create(const std::string& file, pubsub::Time start)
 	{
 		return false;
 	}
+
+    chunk_size_ = chunk_size;
 
 	//write the header
 	rucksack::Header header;
