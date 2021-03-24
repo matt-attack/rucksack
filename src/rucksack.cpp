@@ -80,6 +80,17 @@ SackReader::~SackReader()
 	close();
 }
 
+SackWriter::SackWriter() :
+  f_(0)
+{
+
+}
+
+SackWriter::~SackWriter()
+{
+    close();
+}
+
 bool SackWriter::create(const std::string& file, pubsub::Time start, uint32_t chunk_size)
 {
 	if (f_)
@@ -188,12 +199,12 @@ bool SackReader::get_next_chunk()
 	char op_code;
 	while (current_chunk_ = data_.read_block(op_code))
 	{
-		if (op_code == 0x02)
+		if (op_code == rucksack::constants::ConnectionHeaderOp)
 		{
 			handle_connection_header(current_chunk_);
 			delete[] current_chunk_;
 		}
-		else if (op_code == 0x01)
+		else if (op_code == rucksack::constants::DataChunkOp)
 		{
 			// we got data!
 			current_offset_ = sizeof(rucksack::DataChunk);// reset the offset

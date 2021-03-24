@@ -206,7 +206,7 @@ public:
         }
 
         // Add to the channel
-        iter->second.write(f_, time, msg.data, msg.len);
+        iter->second.write(f_, time, ps_get_msg_start(msg.data), msg.len);
 
         return true;
     }
