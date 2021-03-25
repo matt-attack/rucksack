@@ -403,7 +403,7 @@ struct ChannelDetails
 
 //then need to be able to print out a bag, like below
 
-void info(const std::string& file)
+void info(const std::string& file, pubsub::ArgParser& parser)
 {
 	// start by printing out list of topics, types and runtime
 	rucksack::Sack sack;
@@ -413,6 +413,8 @@ void info(const std::string& file)
 		return;
 	}
 
+    bool verbose = parser.GetBool("v");
+
 	auto header = sack.get_header();
 
 	struct ChannelInfo
@@ -421,6 +423,7 @@ void info(const std::string& file)
 		std::string type;
 		int count;
 		uint32_t hash;
+        ps_message_definition_t definition;
 	};
 
 	std::vector<ChannelInfo> channels;
@@ -438,8 +441,9 @@ void info(const std::string& file)
 			// read in the details about this topic/connection
 			const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
 
-			ps_message_definition_t def;
-			ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1], &def);
+            ChannelInfo details;
+			ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
+                                              &details.definition);
 
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
@@ -450,11 +454,11 @@ void info(const std::string& file)
 				return;
 			}
 
-			ChannelInfo details;
+			
 			details.topic = topic;
-			details.type = def.name;
+			details.type = details.definition.name;
 			details.count = 0;
-			details.hash = def.hash;
+			details.hash = details.definition.hash;
 			channels.push_back(details);
 		}
 		else if (op_code == rucksack::constants::DataChunkOp)
@@ -490,7 +494,7 @@ void info(const std::string& file)
 				off += hdr->length + sizeof(rucksack::MessageHeader);
 			}
 		}
-		delete chunk_ptr;
+		delete[] chunk_ptr;
 	}
 
 	// Now print out the information
@@ -511,16 +515,23 @@ void info(const std::string& file)
 	}
 	printf("messages:   %u\n", total);
 
-	// build a list of message types
-	std::map<std::string, uint32_t> types;
+	// build a list of message types (sort and deduplicate)
+	std::map<std::string, ChannelInfo> types;
 	for (auto& details : channels)
 	{
-		types[details.type] = details.hash;
+		types[details.type] = details;
 	}
 	printf("types:      \n");
 	for (auto& type : types)
 	{
-		printf("  %s [%x]\n", type.first.c_str(), type.second);
+		printf("  %s [%x]\n", type.first.c_str(), type.second.hash);
+        if (verbose)
+        {
+           // print out the message definition
+           printf("-----------------\n");
+           ps_print_definition(&type.second.definition, false);
+           printf("-----------------\n");
+        }
 	}
 
 	printf("topics:\n");
@@ -529,6 +540,12 @@ void info(const std::string& file)
 		double rate = (double)details.count / duration.toSec();
 		printf("  %s    %u msgs @ %0.1lf Hz : %s\n", details.topic.c_str(), details.count, rate, details.type.c_str());
 	}
+
+    // Free the channel infos
+    for (auto& info: channels)
+    {
+        ps_free_message_definition(&info.definition);
+    }
 }
 
 // todo print out in order
@@ -580,6 +597,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 		void Release()
 		{
+            ps_free_message_definition(definition.get());
 			delete publisher;
 		}
 	};
@@ -767,7 +785,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 		}
 
 		ps_msg_t msg;
-		ps_msg_alloc(hdr->length, &msg);
+		ps_msg_alloc(hdr->length, 0, &msg);
 		memcpy(ps_get_msg_start(msg.data), data, hdr->length);
 		ps_pub_publish(index[i].channel->publisher, &msg);
 
@@ -808,6 +826,12 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 	}
 
 	ps_node_destroy(&node);
+
+    // Free the channel infos
+    for (auto& info: channels)
+    {
+        info.Release();
+    }
 }
 
 
@@ -835,14 +859,14 @@ int main(int argc, char** argv)
 	}
 	else if (verb == "info")
 	{
-		//parser.AddMulti({ "a", "all" }, "Record all topics", "true");
+		parser.AddMulti({ "v" }, "Print additional info", "false");
 
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
 		for (auto file : files)
 		{
-			info(file);
+			info(file, parser);
 		}
 	}
 	else if (verb == "play")

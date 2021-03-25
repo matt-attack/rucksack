@@ -2,18 +2,19 @@
 
 #include <pubsub/Node.h>
 
-#include <pubsub/std_msgs__String.msg.h>
+#include <pubsub/String.msg.h>
 
 int main()
 {
-  // make a message to write to the bag file
+  // Create the file
   rucksack::SackWriter sack;
-  sack.create("writing_test.sack", pubsub::Time(0), 1000);
+  sack.create("writing_test.sack", pubsub::Time::now(), 10000);
 
-  std_msgs::String string;
+  // Create a message to write
+  pubsub::msg::String string;
   string.value = "testing";
 
-  // write it n times
+  // Write the message a lot of times
   for (int i = 0; i < 50000; i++)
   {
     sack.write_message("/test", string);
