@@ -834,6 +834,16 @@ void play(const std::string& file, pubsub::ArgParser& parser)
     }
 }
 
+void print_help()
+{
+	printf("Usage: rucksack <verb> (arg1) (arg2) ...\n"
+		" Verbs:\n"
+        "   info (file names)\n"
+		"   play (file names)\n"
+		"   print (file names)\n"
+		"   record (topic name)\n");
+}
+
 
 int main(int argc, char** argv)
 {
@@ -885,7 +895,6 @@ int main(int argc, char** argv)
 	}
 	else if (verb == "print")
 	{
-		pubsub::ArgParser parser;
 		//parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 
 		parser.Parse(argv, argc, 1);
@@ -897,5 +906,10 @@ int main(int argc, char** argv)
 		}
 		//play("C:/Users/space/Desktop/pubsub_proto/test.sack");
 	}
+    else
+    {
+        // give top level help
+        print_help();
+    }
 	return 0;
 }
