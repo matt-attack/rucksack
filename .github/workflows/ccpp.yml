@@ -6,7 +6,18 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
+      with:
+        repository: matt-attack/pubsub
+        path: pubsub
+    - uses: actions/checkout@v2
+      with:
+        path: rucksack
+    - run: ls
+    - run: ls pubsub
+    - run: ls rucksack
+    - name: copy cmake
+      run: cp rucksack/WorkspaceCMakeLists.txt CMakeLists.txt
     - name: cmake configure
       run: cmake .
     - name: cmake build
