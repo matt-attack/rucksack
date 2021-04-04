@@ -24,7 +24,7 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
-#include <stropts.h>
+//#include <stropts.h>
 
 int _kbhit() {
     static const int STDIN = 0;
