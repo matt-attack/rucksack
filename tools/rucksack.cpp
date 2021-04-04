@@ -851,13 +851,9 @@ int main(int argc, char** argv)
 
 	pubsub::ArgParser parser;
 
-	//print("C:/Users/space/Desktop/pubsub_proto/build/x86-Debug/rucksack/test.sack");
-	//parser.AddMulti({ "r" }, "Rate to play the bag at.", "1.0");
-	//parser.AddMulti({ "s" }, "Offset to start playing the bag at.", "0.0");
-	//play("C:/Users/space/Desktop/pubsub_proto/build/x86-Debug/rucksack/test.txt", parser);
-	//return 0;
 	if (verb == "record")
 	{
+		parser.SetUsage("Usage: rucksack record FILE [OPTION...]\n\nRecords topics to a file.\n");
 		parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "16");// todo increase me later
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
@@ -869,6 +865,7 @@ int main(int argc, char** argv)
 	}
 	else if (verb == "info")
 	{
+		parser.SetUsage("Usage: rucksack info FILE... [OPTION...]\n\nPrints information about rucksack files.\n");
 		parser.AddMulti({ "v" }, "Print additional info", "false");
 
 		parser.Parse(argv, argc, 1);
@@ -881,6 +878,7 @@ int main(int argc, char** argv)
 	}
 	else if (verb == "play")
 	{
+		parser.SetUsage("Usage: rucksack play FILE... [OPTION...]\n\nPlays back topics stored in rucksack files.\n");
 		parser.AddMulti({ "r" }, "Rate to play the bag at.", "1.0");
 		parser.AddMulti({ "s" }, "Offset to start playing the bag at.", "0.0");
 
@@ -891,12 +889,11 @@ int main(int argc, char** argv)
 		{
 			play(file, parser);
 		}
-		//play("C:/Users/space/Desktop/pubsub_proto/test.sack");
 	}
 	else if (verb == "print")
 	{
 		//parser.AddMulti({ "a", "all" }, "Record all topics", "true");
-
+		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
@@ -904,7 +901,6 @@ int main(int argc, char** argv)
 		{
 			print(file);
 		}
-		//play("C:/Users/space/Desktop/pubsub_proto/test.sack");
 	}
     else
     {
