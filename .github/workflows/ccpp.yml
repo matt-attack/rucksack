@@ -18,10 +18,7 @@ jobs:
     - uses: actions/checkout@v2
       with:
         repository: matt-attack/pubsub
-        path: pubsub
-    - uses: actions/checkout@v1
-      with:
-        path: rucksack
+    - uses: actions/checkout@v2
     - name: copy cmake
       run: cp rucksack/WorkspaceCMakeLists.txt CMakeLists.txt
     - name: cmake configure
