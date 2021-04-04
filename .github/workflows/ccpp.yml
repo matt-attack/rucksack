@@ -23,7 +23,7 @@ jobs:
       with:
         path: rucksack
     - name: copy cmake
-      run: cp rucksack/WorkspaceCMakeList.txt CMakeLists.txt
+      run: cp rucksack/WorkspaceCMakeLists.txt CMakeLists.txt
     - name: cmake configure
       run: cmake .
     - name: cmake build
