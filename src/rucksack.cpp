@@ -1,6 +1,8 @@
 
 #include <rucksack/rucksack.h>
 
+#include <cstring>
+
 #undef max
 
 namespace rucksack
@@ -39,6 +41,8 @@ bool Sack::open(const std::string& file)
 		//bad file
 
 		fclose(f_);
+        f_ = 0;
+
 		return false;
 	}
 
@@ -55,7 +59,7 @@ char* Sack::read_block(char& out_opcode)
 	}
 
 	// if we hit either of these cases, we probably hit the end
-	if (feof(f_) || bheader.op_code > 0x02)
+	if (feof(f_) || bheader.op_code > rucksack::constants::OpCodeMax)
 	{
 		return 0;
 	}
@@ -76,7 +80,18 @@ SackReader::~SackReader()
 	close();
 }
 
-bool SackWriter::create(const std::string& file, pubsub::Time start)
+SackWriter::SackWriter() :
+  f_(0)
+{
+
+}
+
+SackWriter::~SackWriter()
+{
+    close();
+}
+
+bool SackWriter::create(const std::string& file, pubsub::Time start, uint32_t chunk_size)
 {
 	if (f_)
 	{
@@ -90,6 +105,8 @@ bool SackWriter::create(const std::string& file, pubsub::Time start)
 	{
 		return false;
 	}
+
+    chunk_size_ = chunk_size;
 
 	//write the header
 	rucksack::Header header;
@@ -142,18 +159,18 @@ const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ps_messag
 	}
 
 	// okay, now we have a chunk, read from it
-	rucksack::DataChunk* header = (rucksack::DataChunk*)current_chunk_;
+	rucksack::DataChunk* chunk = (rucksack::DataChunk*)current_chunk_;
 
-	if (header->connection_id >= channels_.size())
+	if (chunk->connection_id >= channels_.size())
 	{
 		printf("ERROR: Got data chunk with out-of-range channel id!");
 		return 0;
 	}
 
 	// todo maybe should use a map?
-	ChannelDetails* details = &channels_[header->connection_id];
+	ChannelDetails* details = &channels_[chunk->connection_id];
 
-	if (current_offset_ >= header->length_bytes)
+	if (current_offset_ >= chunk->header.length_bytes)
 	{
 		// get new chunk, we hit the end
 		delete[] current_chunk_;
@@ -182,12 +199,12 @@ bool SackReader::get_next_chunk()
 	char op_code;
 	while (current_chunk_ = data_.read_block(op_code))
 	{
-		if (op_code == 0x02)
+		if (op_code == rucksack::constants::ConnectionHeaderOp)
 		{
 			handle_connection_header(current_chunk_);
 			delete[] current_chunk_;
 		}
-		else if (op_code == 0x01)
+		else if (op_code == rucksack::constants::DataChunkOp)
 		{
 			// we got data!
 			current_offset_ = sizeof(rucksack::DataChunk);// reset the offset
