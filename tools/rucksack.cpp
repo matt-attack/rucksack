@@ -826,6 +826,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			pubsub::Time(hdr->time).toSec(),
 			(pubsub::Time(hdr->time) - start_time).toSec(),
 			length);
+		fflush(stdout);
 
 		// handle pausing
 		if (_kbhit() && getc(stdin) == ' ')
