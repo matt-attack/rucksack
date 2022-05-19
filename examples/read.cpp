@@ -14,10 +14,10 @@ int main()
   }
 
   rucksack::MessageHeader const* hdr;
-  ps_message_definition_t const* def;
-  while (const void* msg = sack.read(hdr, def))
+  rucksack::SackReader::ChannelDetails const* info;
+  while (const void* msg = sack.read(hdr, info))
   {
-    if (def->hash == pubsub::msg::String::GetDefinition()->hash)
+    if (info->definition.hash == pubsub::msg::String::GetDefinition()->hash)
     {
       // now we can deserialize it to the correct type
       pubsub::msg::String* str = pubsub::msg::String::Decode(msg);
@@ -28,7 +28,7 @@ int main()
     }
     else
     {
-      printf("Unhandled message type %s.\n", def->name);
+      printf("Unhandled message type %s.\n", info->definition.name);
     }
   }
 

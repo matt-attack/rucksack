@@ -147,7 +147,7 @@ void SackReader::close()
 	data_.close();
 }
 
-const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ps_message_definition_t const*& out_def)
+const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ChannelDetails const*& out_info)
 {
 	// check if we are currently in a chunk
 	if (!current_chunk_)
@@ -188,7 +188,7 @@ const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ps_messag
 
 	// setup other output
 	out_hdr = hdr;
-	out_def = &details->definition;
+	out_info = details;
 
 	return msg;
 }

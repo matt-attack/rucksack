@@ -1,4 +1,6 @@
 
+#include <pubsub/TCPTransport.h>
+
 #include <pubsub/Node.h>
 #include <pubsub/Subscriber.h>
 #include <pubsub/Publisher.h>
@@ -110,15 +112,16 @@ struct Channel
 std::vector<Channel*> _channels;
 uint32_t _channel_id = 0;
 
-void record(const std::string& file, pubsub::ArgParser& parser)
+void record(pubsub::ArgParser& parser)
 {
-	std::string real_file = file;
-	if (file.length() == 0)
+	std::string filename = std::to_string(std::round(pubsub::Time::now().toSec())) + ".sack";
+	if (parser.GetString("o").length() > 0)
 	{
-		real_file = std::to_string(std::round(pubsub::Time::now().toSec())) + ".sack";
+		filename = parser.GetString("o");
 	}
+	
 	// open the file
-	FILE* f = fopen(real_file.c_str(), "wb");
+	FILE* f = fopen(filename.c_str(), "wb");
 
 	// read in parameters
 	unsigned int max_count = std::numeric_limits<unsigned int>::max();
@@ -126,7 +129,7 @@ void record(const std::string& file, pubsub::ArgParser& parser)
 	{
 		max_count = parser.GetDouble("n");
 	}
-	pubsub::Duration max_length = pubsub::Duration(std::numeric_limits<uint64_t>::max());
+	pubsub::Duration max_length = pubsub::Duration(std::numeric_limits<int64_t>::max());
 	if (parser.GetDouble("d") > 0)
 	{
 		max_length = pubsub::Duration(parser.GetDouble("d"));
@@ -136,6 +139,10 @@ void record(const std::string& file, pubsub::ArgParser& parser)
 	// first lets get a list of all topics, and then subscribe to them
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
+	
+	struct ps_transport_t tcp_transport;
+    ps_tcp_transport_init(&tcp_transport, &node);
+    ps_node_add_transport(&node, &tcp_transport);
 
 	ps_node_system_query(&node);
 
@@ -147,7 +154,7 @@ void record(const std::string& file, pubsub::ArgParser& parser)
 			return;
 		}
 
-		printf("Subscribing to %s..\n", topic);
+		printf("Found topic %s..\n", topic);
 		
 		TopicData tdata;
 		tdata.topic = topic;
@@ -232,14 +239,32 @@ void record(const std::string& file, pubsub::ArgParser& parser)
 	header.version = 1;
 	fwrite(&header, sizeof(header), 1, f);
 
+	auto topics_to_record = parser.GetAllPositional();
+
 	static int count = 0;
 	// now subscribe to things!
 	node.adv_cb = 0;// todo dont do this
 	for (auto& topic: _topics)
 	{
+		// see if we found it
+		bool found = false;
+		for (auto& t: topics_to_record)
+		{
+			if (topic.first == t)
+			{
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+		{
+			continue;
+		}
+		
+		printf("Subscribing to %s\n", topic.first.c_str());
 		struct ps_subscriber_options options;
 		ps_subscriber_options_init(&options);
-
+		options.preferred_transport = 1;// prefer tcp
 		options.skip = 0;
 		options.queue_size = 0;
 		options.want_message_def = true;
@@ -559,10 +584,10 @@ void print(const std::string& file)
 	}
 
 	rucksack::MessageHeader const* hdr;
-	ps_message_definition_t const* def;
-	while (const void* msg = sack.read(hdr, def))
+	rucksack::SackReader::ChannelDetails const* info;
+	while (const void* msg = sack.read(hdr, info))
 	{
-		ps_deserialize_print(msg, def);
+		ps_deserialize_print(msg, &info->definition);
 		printf("------------\n");
 	}
 
@@ -853,15 +878,16 @@ int main(int argc, char** argv)
 
 	if (verb == "record")
 	{
-		parser.SetUsage("Usage: rucksack record FILE [OPTION...]\n\nRecords topics to a file.\n");
+		parser.SetUsage("Usage: rucksack record TOPIC... [OPTION...]\n\nRecords topics to a file.\n");
 		parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "16");// todo increase me later
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
 		parser.AddMulti({ "n" }, "Number of messages to record", "-1.0");
+		parser.AddMulti({ "o" }, "Name of sack file", "");
 
 		parser.Parse(argv, argc, 1);
 
-		record(parser.GetPositional(0), parser);
+		record(parser);
 	}
 	else if (verb == "info")
 	{
