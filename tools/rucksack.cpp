@@ -612,6 +612,10 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
+	
+	struct ps_transport_t tcp_transport;
+	ps_tcp_transport_init(&tcp_transport, &node);
+	ps_node_add_transport(&node, &tcp_transport);
 
 	struct ChannelOutput
 	{
