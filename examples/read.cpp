@@ -14,7 +14,7 @@ int main()
   }
 
   rucksack::MessageHeader const* hdr;
-  rucksack::SackReader::ChannelDetails const* info;
+  rucksack::SackChannelDetails const* info;
   while (const void* msg = sack.read(hdr, info))
   {
     if (info->definition.hash == pubsub::msg::String::GetDefinition()->hash)

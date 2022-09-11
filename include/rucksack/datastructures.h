@@ -18,6 +18,8 @@ namespace constants
         OpCodeMax = 0x02
     };
 }
+
+#pragma pack(push, 1)
 // So a bag consists of a header than a big array of chunks labeled with a byte opcode then a uint32 size
 
 // the chunk types include:
@@ -75,4 +77,5 @@ struct MessageHeader
 	uint64_t time;
 	uint32_t length;// size of the message
 };
+#pragma pack(pop)
 }

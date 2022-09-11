@@ -147,7 +147,7 @@ void SackReader::close()
 	data_.close();
 }
 
-const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ChannelDetails const*& out_info)
+const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, SackChannelDetails const*& out_info)
 {
 	// check if we are currently in a chunk
 	if (!current_chunk_)
@@ -168,7 +168,7 @@ const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ChannelDe
 	}
 
 	// todo maybe should use a map?
-	ChannelDetails* details = &channels_[chunk->connection_id];
+	SackChannelDetails* details = &channels_[chunk->connection_id];
 
 	if (current_offset_ >= chunk->header.length_bytes)
 	{
@@ -179,6 +179,9 @@ const void* SackReader::read(rucksack::MessageHeader const *& out_hdr, ChannelDe
 		{
 			return 0;// we hit the end
 		}
+
+		chunk = (rucksack::DataChunk*)current_chunk_;
+		details = &channels_[chunk->connection_id];
 	}
 
 	rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&current_chunk_[current_offset_];
@@ -230,20 +233,19 @@ void SackReader::handle_connection_header(const char* chunk)
 	// todo handle duplicate message definitions/channels
 
 	// insert this into our header list
-	if (header->connection_id != channels_.size())
+	if (header->connection_id >= channels_.size())
 	{
-		printf("ERROR: Read in channel with out of order ID.");
-		return;
+		channels_.resize(header->connection_id + 1);
 	}
 
 	ps_message_definition_t def;
 	ps_deserialize_message_definition(&chunk[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1], &def);
 
-	ChannelDetails details;
+	SackChannelDetails details;
 	details.definition = def;
 	details.topic = topic;
 	details.type = def.name;
-	channels_.push_back(details);
+	channels_[header->connection_id] = details;
 }
 
 }

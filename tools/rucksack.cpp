@@ -18,6 +18,7 @@
 #include <mutex>
 #include <algorithm>
 #include <thread>
+#include <memory>
 
 #ifdef _WIN32
 #include <conio.h>
@@ -119,12 +120,14 @@ void record(pubsub::ArgParser& parser)
 	{
 		filename = parser.GetString("o");
 	}
+
+	printf("Recording to '%s'\n", filename.c_str());
 	
 	// open the file
 	FILE* f = fopen(filename.c_str(), "wb");
 
 	// read in parameters
-	unsigned int max_count = std::numeric_limits<unsigned int>::max();
+	static unsigned int max_count = std::numeric_limits<unsigned int>::max();
 	if (parser.GetDouble("n") > 0)
 	{
 		max_count = parser.GetDouble("n");
@@ -272,6 +275,11 @@ void record(pubsub::ArgParser& parser)
 		options.ignore_local = false;
 		options.cb = [](void* message, unsigned int size, void* data, const ps_msg_info_t* info)
 		{
+			if (count >= max_count)
+			{
+				return;
+			}
+
 			count++;
 			//todo need to make sure we dont wildcard subscribe on the topic without checking that they are all the same time
 			Channel* channel = (Channel*)data;
@@ -363,7 +371,7 @@ void record(pubsub::ArgParser& parser)
 	while (ps_okay())
 	{
 		// check if we should stop
-		if (count > max_count || (pubsub::Time::now() - header.start_time) > max_length)
+		if (count >= max_count || (pubsub::Time::now() - header.start_time) > max_length)
 		{
 			break;
 		}
@@ -473,18 +481,16 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
 			// insert this into our header list
-			if (header->connection_id != channels.size())
+			if (header->connection_id >= channels.size())
 			{
-				printf("ERROR: Read in channel with out of order ID.");
-				return;
+				channels.resize(header->connection_id + 1);
 			}
-
 			
 			details.topic = topic;
 			details.type = details.definition.name;
 			details.count = 0;
 			details.hash = details.definition.hash;
-			channels.push_back(details);
+			channels[header->connection_id] = details;
 		}
 		else if (op_code == rucksack::constants::DataChunkOp)
 		{
@@ -512,7 +518,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 				char* msg = &chunk_ptr[off + sizeof(rucksack::MessageHeader)];
 
 				// decode yo!
-				//ps_deserialize_print(msg, &details->definition);
+				ps_deserialize_print(msg, &details->definition, 0);
 
 				details->count++;
 
@@ -584,10 +590,10 @@ void print(const std::string& file)
 	}
 
 	rucksack::MessageHeader const* hdr;
-	rucksack::SackReader::ChannelDetails const* info;
-	while (const void* msg = sack.read(hdr, info))
+	rucksack::SackChannelDetails const* def;
+	while (const void* msg = sack.read(hdr, def))
 	{
-		ps_deserialize_print(msg, &info->definition);
+		ps_deserialize_print(msg, &def->definition, 0);
 		printf("------------\n");
 	}
 
@@ -662,10 +668,9 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
 			// insert this into our header list
-			if (header->connection_id != channels.size())
+			if (header->connection_id >= channels.size())
 			{
-				printf("ERROR: Read in channel with out of order ID.");
-				return;
+				channels.resize(header->connection_id + 1);
 			}
 
 			// todo message definition leaks
@@ -679,7 +684,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			// create the publisher
 			// todo handle latched
 			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, false);
-			channels.push_back(details);
+			channels[header->connection_id] = details;
 
 			//printf("Got connection header\n");
 
@@ -887,7 +892,7 @@ int main(int argc, char** argv)
 		parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "16");// todo increase me later
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
-		parser.AddMulti({ "n" }, "Number of messages to record", "-1.0");
+		parser.AddMulti({ "n" }, "Number of messages to record", "-1");
 		parser.AddMulti({ "o" }, "Name of sack file", "");
 
 		parser.Parse(argv, argc, 1);

@@ -228,17 +228,16 @@ public:
 	}
 };
 
+struct SackChannelDetails
+{
+	std::string topic;
+	std::string type;
+	ps_message_definition_t definition;
+};
+
 class SackReader
 {
-public:
-	struct ChannelDetails
-	{
-		std::string topic;
-		std::string type;
-		ps_message_definition_t definition;
-	};
-private:
-	std::vector<ChannelDetails> channels_;
+	std::vector<SackChannelDetails> channels_;
 
 	Sack data_;
 
@@ -256,7 +255,7 @@ public:
 	void close();
 
     // Note that this does not read in time order. It reads out entire chunks at a time (same message).
-	const void* read(rucksack::MessageHeader const *& out_hdr, ChannelDetails const*& out_info);
+	const void* read(rucksack::MessageHeader const *& out_hdr, SackChannelDetails const*& out_info);
 
 private:
 
