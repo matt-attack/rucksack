@@ -515,11 +515,6 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			{
 				rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
 
-				char* msg = &chunk_ptr[off + sizeof(rucksack::MessageHeader)];
-
-				// decode yo!
-				ps_deserialize_print(msg, &details->definition, 0);
-
 				details->count++;
 
 				off += hdr->length + sizeof(rucksack::MessageHeader);
