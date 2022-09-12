@@ -43,6 +43,6 @@ jobs:
         cmake --build .
     - name: build rucksack
       run: |
-        cd pubsub
+        cd rucksack
         cmake .
         cmake --build .
