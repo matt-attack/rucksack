@@ -36,9 +36,13 @@ jobs:
     - run: ls
     - run: ls pubsub
     - run: ls rucksack
-    - name: copy cmake
-      run: cp rucksack/WorkspaceCMakeLists.txt CMakeLists.txt
-    - name: cmake configure
-      run: cmake .
-    - name: cmake build
-      run: cmake --build .
+    - name: build pubsub
+      run: |
+        cd pubsub
+        cmake .
+        cmake --build .
+    - name: build rucksack
+      run: |
+        cd pubsub
+        cmake .
+        cmake --build .
