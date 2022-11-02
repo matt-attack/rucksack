@@ -68,6 +68,7 @@ struct QueueChunk
 	rucksack::DataChunk header;
 	char* data;
 	uint32_t current_position;
+	FILE* file;
 };
 
 std::mutex _chunk_mutex;
@@ -77,6 +78,7 @@ struct Channel;
 struct QueueChannel
 {
 	Channel* channel;
+	FILE* file;
 };
 std::mutex _channel_mutex;
 std::vector<QueueChannel> _finished_channels;
@@ -94,6 +96,7 @@ std::map<std::string, TopicData> _topics;
 struct Channel
 {
 	QueueChunk open_chunk;
+	pubsub::Time open_chunk_last_message_time;
 	ps_sub_t sub;
 	uint32_t id;
 
@@ -109,22 +112,43 @@ struct Channel
 		open_chunk.data = 0;
 		open_chunk.current_position = 0;
 	}
+
+    void Reset()
+    {
+        written = false;
+        open_chunk.data = 0;
+        open_chunk.current_position = 0;
+    }
 };
 std::vector<Channel*> _channels;
 uint32_t _channel_id = 0;
+FILE* _current_sack_file = 0;
 
 void record(pubsub::ArgParser& parser)
 {
-	std::string filename = std::to_string(std::round(pubsub::Time::now().toSec())) + ".sack";
+	std::string filename = std::to_string((int)std::round(pubsub::Time::now().toSec())) + ".sack";
 	if (parser.GetString("o").length() > 0)
 	{
 		filename = parser.GetString("o");
 	}
 
+	bool record_all_topics = parser.GetBool("a");
+	auto topics_to_record = parser.GetAllPositional();
+
+	if (topics_to_record.size() == 0 && !record_all_topics)
+	{
+		printf("record: must list topics to record or use -a\n");
+		return;
+	}
+
+	bool split = parser.GetBool("split");
+
 	printf("Recording to '%s'\n", filename.c_str());
 	
 	// open the file
-	FILE* f = fopen(filename.c_str(), "wb");
+	_current_sack_file = fopen(filename.c_str(), "wb");
+	std::vector<FILE*> files;
+	files.push_back(_current_sack_file);
 
 	// read in parameters
 	static unsigned int max_count = std::numeric_limits<unsigned int>::max();
@@ -168,7 +192,7 @@ void record(pubsub::ArgParser& parser)
 
 	static bool recording = true;
 	// create the data saving thread
-	std::thread saver([f]()
+	std::thread saver([]()
 	{
 		while (ps_okay() && recording)
 		{
@@ -192,13 +216,13 @@ void record(pubsub::ArgParser& parser)
 
 				int data_length = def_len + chunk.channel->topic.topic.length() + 1;
 				header.header.length_bytes = data_length + sizeof(header);
-				fwrite(&header, sizeof(header), 1, f);
+				fwrite(&header, sizeof(header), 1, chunk.file);
 
 				// then goes the topic name string
-				fwrite(chunk.channel->topic.topic.c_str(), 1, chunk.channel->topic.topic.length() + 1, f);
+				fwrite(chunk.channel->topic.topic.c_str(), 1, chunk.channel->topic.topic.length() + 1, chunk.file);
 
 				// then the message definition
-				fwrite(buf, def_len, 1, f);
+				fwrite(buf, def_len, 1, chunk.file);
 			}
 
 			// check for chunks and save em if we have em
@@ -216,10 +240,10 @@ void record(pubsub::ArgParser& parser)
 				chunk.header.header.length_bytes = chunk.current_position + sizeof(chunk.header);
 
 				// write header
-				fwrite(&chunk.header, sizeof(chunk.header), 1, f);
+				fwrite(&chunk.header, sizeof(chunk.header), 1, chunk.file);
 
 				// write body
-				fwrite(chunk.data, 1, chunk.current_position, f);
+				fwrite(chunk.data, 1, chunk.current_position, chunk.file);
 
 				delete[] chunk.data;
 			}
@@ -240,9 +264,7 @@ void record(pubsub::ArgParser& parser)
 	header.magic_number = rucksack::constants::MagicNumber;
 	header.start_time = pubsub::Time::now().usec;
 	header.version = 1;
-	fwrite(&header, sizeof(header), 1, f);
-
-	auto topics_to_record = parser.GetAllPositional();
+	fwrite(&header, sizeof(header), 1, _current_sack_file);
 
 	static int count = 0;
 	// now subscribe to things!
@@ -250,16 +272,16 @@ void record(pubsub::ArgParser& parser)
 	for (auto& topic: _topics)
 	{
 		// see if we found it
-		bool found = false;
+		bool record = record_all_topics;
 		for (auto& t: topics_to_record)
 		{
 			if (topic.first == t)
 			{
-				found = true;
+				record = true;
 				break;
 			}
 		}
-		if (!found)
+		if (!record)
 		{
 			continue;
 		}
@@ -300,6 +322,7 @@ void record(pubsub::ArgParser& parser)
 					// now that we have message definition we can save the data in a chunk
 					QueueChannel ch_data;
 					ch_data.channel = channel;
+					ch_data.file = _current_sack_file;
 					_channel_mutex.lock();
 					_finished_channels.push_back(ch_data);
 					_channel_mutex.unlock();
@@ -327,7 +350,8 @@ void record(pubsub::ArgParser& parser)
 					// if we are past the chunk size, start a new one and push this one
 					if (chunk.current_position + size + sizeof(rucksack::MessageHeader) >= chunk_size)
 					{
-						chunk.header.end_time = now.usec;
+						chunk.header.end_time = channel->open_chunk_last_message_time.usec;
+						chunk.file = _current_sack_file;
 						_chunk_mutex.lock();
 						_finished_chunks.push_back(chunk);
 						_chunk_mutex.unlock();
@@ -352,6 +376,8 @@ void record(pubsub::ArgParser& parser)
 				memcpy(chunk.data+chunk.current_position, message, size);
 				chunk.current_position += size;
 
+				channel->open_chunk_last_message_time = now;
+
 				free(message);
 			}
 		};
@@ -367,13 +393,58 @@ void record(pubsub::ArgParser& parser)
 		_channels.push_back(new_channel);
 	}
 
-	// spin away!
+	// Spin away!
+	int bag_number = 1;
 	while (ps_okay())
 	{
-		// check if we should stop
-		if (count >= max_count || (pubsub::Time::now() - header.start_time) > max_length)
+		// Check if we should stop
+		if (count >= max_count)
 		{
 			break;
+		}
+
+		// Check if we should stop or split for going over time
+		if (pubsub::Time::now() - header.start_time) > max_length)
+		{
+            if (split)
+            {
+                // Save any open chunks and swap to a new file
+	            for (auto& ch : _channels)
+	            {
+                    auto& chunk = ch->open_chunk;
+		            if (chunk.data && chunk.current_position > 0)
+		            {
+                        chunk.header.end_time = ch->open_chunk_last_message_time.usec;
+                        chunk.file = _current_sack_file;
+						_chunk_mutex.lock();
+						_finished_chunks.push_back(chunk);
+						_chunk_mutex.unlock();
+                    }
+
+                    // Reset it for use with the new bag
+                    ch->Reset();
+                }
+
+                // Now open a new file to record to
+                std::string bag_name = filename + std::to_string(bag_number);
+                bag_number++;
+
+                printf("Recording to new bag '%s'\n", bag_name.c_str());
+                _current_sack_file = fopen(bag_name.c_str(), "wb");
+
+	            // Write the header, this might block a bit in this thread, but meh its rare
+	            //rucksack::Header header;
+	            header.magic_number = rucksack::constants::MagicNumber;
+	            header.start_time = pubsub::Time::now().usec;
+	            header.version = 1;
+	            fwrite(&header, sizeof(header), 1, _current_sack_file);
+
+                files.push_back(_current_sack_file);
+            }
+            else
+            {
+			    break;
+            }
 		}
 		// todo blocking
 		ps_node_spin(&node);
@@ -395,23 +466,13 @@ void record(pubsub::ArgParser& parser)
 			// fill in the rest of the header
 			chunk->header.header.op_code = rucksack::constants::DataChunkOp;
 			chunk->header.header.length_bytes = chunk->current_position + sizeof(chunk->header);
-
-			// determine real end time
-			// loop through the messages and find the last one
-			unsigned int pos = 0;
-			uint64_t time = now.usec;
-			while (pos < chunk->current_position)
-			{
-				const rucksack::MessageHeader* header = (rucksack::MessageHeader*)&chunk->data[pos];
-				chunk->header.end_time = header->time;
-				pos += header->length + sizeof(rucksack::MessageHeader);
-			}
+            chunk->header.end_time = ch->open_chunk_last_message_time.usec;
 
 			// write header
-			fwrite(&chunk->header, sizeof(chunk->header), 1, f);
+			fwrite(&chunk->header, sizeof(chunk->header), 1, _current_sack_file);
 
 			// write body
-			fwrite(chunk->data, 1, chunk->current_position, f);
+			fwrite(chunk->data, 1, chunk->current_position, _current_sack_file);
 
 			delete[] chunk->data;
 		}
@@ -419,7 +480,12 @@ void record(pubsub::ArgParser& parser)
 		// close the subscriber
 		ps_sub_destroy(&ch->sub);
 	}
-	fclose(f);
+
+	// Close all the files we opened
+	for (auto& file: files)
+	{
+		fclose(file);
+	}
 
 	printf("Recorded %i messages\n", count);
 }
@@ -445,6 +511,13 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		printf("ERROR: Opening sack failed!\n");
 		return;
 	}
+
+	// quickly grab file size
+	FILE* f = fopen(file.c_str(), "rb");
+	fseek(f, 0, SEEK_END); // seek to end of file
+	int64_t size = ftell(f); // get current file pointer
+	fseek(f, 0, SEEK_SET); // seek back to beginning of file
+	fclose(f);
 
     bool verbose = parser.GetBool("v");
 
@@ -532,10 +605,21 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	printf("start:      %s\n", pubsub::Time(header.start_time).toString().c_str());
 	printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
 	printf("chunks:     %u\n", n_chunks);
-	//printf("size:       %d bytes\n", size);
+	if (size > 10000000)
+	{
+		printf("size:       %0.2f megabytes\n", size/1000000.0);
+	}
+	else if (size > 10000)
+	{
+		printf("size:       %0.2f kilobytes\n", size/1000.0);
+	}
+	else
+	{
+		printf("size:       %ld bytes\n", size);
+	}
 
 	unsigned int total = 0;
-	for (auto& details : channels)
+	for (auto& details: channels)
 	{
 		total += details.count;
 	}
@@ -543,12 +627,12 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 
 	// build a list of message types (sort and deduplicate)
 	std::map<std::string, ChannelInfo> types;
-	for (auto& details : channels)
+	for (auto& details: channels)
 	{
 		types[details.type] = details;
 	}
 	printf("types:      \n");
-	for (auto& type : types)
+	for (auto& type: types)
 	{
 		printf("  %s [%x]\n", type.first.c_str(), type.second.hash);
         if (verbose)
@@ -561,7 +645,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	}
 
 	printf("topics:\n");
-	for (auto& details : channels)
+	for (auto& details: channels)
 	{
 		double rate = (double)details.count / duration.toSec();
 		printf("  %s    %u msgs @ %0.1lf Hz : %s\n", details.topic.c_str(), details.count, rate, details.type.c_str());
@@ -588,6 +672,7 @@ void print(const std::string& file)
 	rucksack::SackChannelDetails const* def;
 	while (const void* msg = sack.read(hdr, def))
 	{
+		printf("topic: %s\n---\n", def->topic.c_str());
 		ps_deserialize_print(msg, &def->definition, 0);
 		printf("------------\n");
 	}
@@ -884,11 +969,12 @@ int main(int argc, char** argv)
 	if (verb == "record")
 	{
 		parser.SetUsage("Usage: rucksack record TOPIC... [OPTION...]\n\nRecords topics to a file.\n");
-		parser.AddMulti({ "a", "all" }, "Record all topics", "true");
+		parser.AddMulti({ "a", "all" }, "Record all topics", "false");
 		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "16");// todo increase me later
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
 		parser.AddMulti({ "n" }, "Number of messages to record", "-1");
 		parser.AddMulti({ "o" }, "Name of sack file", "");
+        parser.AddMulti({ "split" }, "If true, split into separate sack files.", "false");
 
 		parser.Parse(argv, argc, 1);
 
@@ -923,7 +1009,6 @@ int main(int argc, char** argv)
 	}
 	else if (verb == "print")
 	{
-		//parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
 		parser.Parse(argv, argc, 1);
 
@@ -935,6 +1020,11 @@ int main(int argc, char** argv)
 	}
     else
     {
+        if (verb.length())
+        {
+            printf("Unknown Verb: %s\n", verb.c_str());
+        }
+
         // give top level help
         print_help();
     }
