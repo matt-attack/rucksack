@@ -431,10 +431,10 @@ struct ChannelDetails
 	ps_message_definition_t definition;
 };
 //okay, lets add utility functions now that the basics work
-//need to be able to see the info of a bag, aka message count and list of topics
+//need to be able to see the info of a rucksack, aka message count and list of topics
 //as well as length in human readable form
 
-//then need to be able to print out a bag, like below
+//then need to be able to print out a rucksack, like below
 
 void info(const std::string& file, pubsub::ArgParser& parser)
 {
@@ -523,6 +523,16 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		delete[] chunk_ptr;
 	}
 
+	// Quickly grab file size
+	uint64_t size = 0;
+	FILE* f = fopen(file.c_str(), "rb");
+	if (f)
+	{
+		fseek(f, 0L, SEEK_END);
+		size = ftell(f);
+		fclose(f);
+	}
+
 	// Now print out the information
 	printf("path:       %s\n", file.c_str());
 	printf("version:    %u\n", header.version);
@@ -532,7 +542,6 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	printf("start:      %s\n", pubsub::Time(header.start_time).toString().c_str());
 	printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
 	printf("chunks:     %u\n", n_chunks);
-	//printf("size:       %d bytes\n", size);
 
 	unsigned int total = 0;
 	for (auto& details : channels)
@@ -540,6 +549,19 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		total += details.count;
 	}
 	printf("messages:   %u\n", total);
+
+	if (size > 1000 * 1000)
+	{
+		printf("size:       %0.3f MB\n", size / 1000000.0);
+	}
+	else if (size > 1000 * 1000)
+	{
+		printf("size:       %0.3f KB\n", size / 1000.0);
+	}
+	else
+	{
+		printf("size:       %u bytes\n", size);
+	}
 
 	// build a list of message types (sort and deduplicate)
 	std::map<std::string, ChannelInfo> types;
@@ -588,7 +610,7 @@ void print(const std::string& file)
 	rucksack::SackChannelDetails const* def;
 	while (const void* msg = sack.read(hdr, def))
 	{
-		ps_deserialize_print(msg, &def->definition, 0);
+		ps_deserialize_print(msg, &def->definition, 0, 0);
 		printf("------------\n");
 	}
 
@@ -644,6 +666,8 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 	const double req_start_time = parser.GetDouble("s");
 	const pubsub::Time start_time = pubsub::Time(header.start_time) + pubsub::Duration(req_start_time);
 
+	const bool loop = parser.GetBool("l");
+
 	uint64_t last_time = 0;
 	// now iterate through each and every chunk
 	char op_code;
@@ -678,7 +702,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			details.publisher = new ps_pub_t;
 			// create the publisher
 			// todo handle latched
-			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, false);
+			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, true);
 			channels[header->connection_id] = details;
 
 			//printf("Got connection header\n");
@@ -713,7 +737,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 		}
 	}
 
-	printf("Warning: this bag is unordered so playback may take a moment to begin..\n");
+	printf("Warning: this rucksack is unordered so playback may take a moment to begin..\n");
 
 	// okay, lets build an index for playing this back...
 	// sort chunks by start time  (should already be in order honestly...)
@@ -848,6 +872,13 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 				}
 			}
 		}
+
+		// if in loop mode, go back to beginning at the end
+		if (loop && i == index.size() - 1)
+		{
+			i = 0;
+			real_begin = pubsub::Time::now();
+		}
 	}
 
 	for (int i = 0; i < chunks.size(); i++)
@@ -910,8 +941,9 @@ int main(int argc, char** argv)
 	else if (verb == "play")
 	{
 		parser.SetUsage("Usage: rucksack play FILE... [OPTION...]\n\nPlays back topics stored in rucksack files.\n");
-		parser.AddMulti({ "r" }, "Rate to play the bag at.", "1.0");
-		parser.AddMulti({ "s" }, "Offset to start playing the bag at.", "0.0");
+		parser.AddMulti({ "r" }, "Rate to play the rucksack at.", "1.0");
+		parser.AddMulti({ "s" }, "Offset to start playing the rucksack at.", "0.0");
+		parser.AddMulti({ "l" }, "If set, loop through the rucksack rather than stopping at the end.");
 
 		parser.Parse(argv, argc, 1);
 
