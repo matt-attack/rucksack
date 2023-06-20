@@ -3,17 +3,17 @@ cmake_minimum_required (VERSION 3.6)
 project ("rucksack")
 
 find_package(pubsub REQUIRED)
-find_package(pubsub_cpp REQUIRED)
-
-#message(FATAL_ERROR "generate_messages() called with unused arguments: ${pubsub_LIBRARIES}")
 
 # Add source to this project's library
 add_library(librucksack 
   "src/rucksack.cpp"
 )
 target_include_directories(librucksack PUBLIC include/ ${pubsub_INCLUDE_DIRS} ${pubsub_cpp_LIBRARIES})
-target_link_libraries(librucksack pthread ${pubsub_LIBRARIES})
+target_link_libraries(librucksack ${pubsub_LIBRARIES})
 set_property(TARGET librucksack PROPERTY CXX_STANDARD 11)
+#set_target_properties(librucksack PROPERTIES DEBUG_POSTFIX "d")
+#set_target_properties(librucksack PROPERTIES ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}/out )
+#set_target_properties(librucksack PROPERTIES ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_CURRENT_SOURCE_DIR}/out )
 
 # Build the command line tool for working with sacks
 add_executable(rucksack "tools/rucksack.cpp")
@@ -45,7 +45,13 @@ function(my_export_target _target _include_dir)
                     INTERFACE_INCLUDE_DIRECTORIES \"${_include_dir}\"
             )
             set(${_target}_INCLUDE_DIRS \"${_include_dir}\")
+            if(UNIX)
             set(${_target}_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/lib${_target}.a\")
+            set(${_target}_DEBUG_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/lib${_target}.a\")
+            else()
+            set(${_target}_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/../../${_target}.lib\")
+            set(${_target}_DEBUG_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/../../${_target}d.lib\")
+            endif()
         "
     )
 
