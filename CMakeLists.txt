@@ -12,7 +12,11 @@ add_library(librucksack
   "src/rucksack.cpp"
 )
 target_include_directories(librucksack PUBLIC include/ ${pubsub_INCLUDE_DIRS} ${pubsub_cpp_LIBRARIES})
+if (UNIX)
 target_link_libraries(librucksack pthread ${pubsub_LIBRARIES})
+else()
+target_link_libraries(librucksack ${pubsub_LIBRARIES})
+endif()
 set_property(TARGET librucksack PROPERTY CXX_STANDARD 11)
 
 # Build the command line tool for working with sacks
@@ -45,7 +49,11 @@ function(my_export_target _target _include_dir)
                     INTERFACE_INCLUDE_DIRECTORIES \"${_include_dir}\"
             )
             set(${_target}_INCLUDE_DIRS \"${_include_dir}\")
+            if(UNIX)
             set(${_target}_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/lib${_target}.a\")
+            else()
+            set(${_target}_LIBRARIES \"${CMAKE_CURRENT_BINARY_DIR}/${_target}.lib\")
+            endif()
         "
     )
 
