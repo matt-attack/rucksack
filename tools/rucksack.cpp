@@ -739,12 +739,23 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	ps_tcp_transport_init(&tcp_transport, &node);
 	ps_node_add_transport(&node, &tcp_transport);
 
+	struct ChannelOutput;
+	struct MessageIndex
+	{
+		uint64_t time;
+		ChannelOutput* channel;
+		const char* ptr;
+	};
+
 	struct ChannelOutput
 	{
 		std::shared_ptr<char[]> topic;
 		std::string type;
 		std::shared_ptr<ps_message_definition_t> definition;
 		ps_pub_t* publisher;
+
+		bool latched;
+		MessageIndex latched_message;
 
 		void Release()
 		{
@@ -797,8 +808,11 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 			strcpy(details.topic.get(), topic);
 			details.type = def.name;
 			details.publisher = new ps_pub_t;
+			details.latched_message.ptr = 0;
+			details.latched_message.time = 0;
+			details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) != 0);
 			// create the publisher
-			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0);
+			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, details.latched);
 			channels[header->connection_id] = details;
 
 			delete[] chunk_ptr;
@@ -813,8 +827,8 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 				return;
 			}
 
-			// if the chunk is too old, ignore it
-			if (chunk->end_time < start_time.usec)
+			// if the chunk is too old, ignore it unless its latched since we need to grab data from it
+			if (chunk->end_time < start_time.usec && !channels[chunk->connection_id].latched)
 			{
 				delete[] chunk_ptr;
 				continue;
@@ -830,6 +844,27 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		}
 	}
 
+	const double length = (pubsub::Time(last_time) - start_time).toSec();
+
+	if (req_start_time > length)
+	{
+		printf("Start time is past end of sackfile.\n");
+		
+		for (int i = 0; i < chunks.size(); i++)
+		{
+			delete[] chunks[i].block;
+		}
+
+		ps_node_destroy(&node);
+
+    	// Free the channel infos
+    	for (auto& info: channels)
+    	{
+        	info.Release();
+    	}
+		return;
+	}
+
 	printf("Warning: this bag is unordered so playback may take a moment to begin..\n");
 
 	// okay, lets build an index for playing this back...
@@ -843,12 +878,6 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	});
 
 	// now build index by looping over chunks
-	struct MessageIndex
-	{
-		uint64_t time;
-		ChannelOutput* channel;
-		const char* ptr;
-	};
 	std::vector<MessageIndex> index;
 	index.reserve(1000000);// should be good enough for anyone
 	for (int i = 0; i < chunks.size(); i++)
@@ -877,12 +906,21 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 			idx.time = hdr->time;
 			idx.channel = details;
 
-
 			off += hdr->length + sizeof(rucksack::MessageHeader);
 
             // Ignore this message if it's before our start time
 			if (idx.time < start_time.usec)
 			{
+				//printf("dropping\n");
+				if (details->latched)
+				{
+					// its latched, keep track of the latest message less than start time
+					if (idx.time >= details->latched_message.time)
+					{
+						details->latched_message = idx;
+					}
+				}
+
 				continue;
 			}
 			index.push_back(idx);
@@ -898,18 +936,49 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 
 	printf("Done sorting...\n");
 
+	// Publish any latched topics that happen before start time
+	for (const auto& channel: channels)
+	{
+		if (channel.latched_message.ptr)
+		{
+			rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)channel.latched_message.ptr;
+			const char* data = channel.latched_message.ptr + sizeof(rucksack::MessageHeader);
+			ps_msg_t msg;
+			ps_msg_alloc(hdr->length, 0, &msg);
+			memcpy(ps_get_msg_start(msg.data), data, hdr->length);
+			ps_pub_publish(channel.publisher, &msg);
+		}
+	}
+
 	// give the node a bit to advertise
 	wait(&node);
-
-	
-	const double length = (pubsub::Time(last_time) - start_time).toSec();
 
 	const double time_scale = parser.GetDouble("r");
 	const double inv_time_scale = 1.0 / time_scale;
 	const double inv_time_scale_ms = inv_time_scale / 1000.0;
 
-	pubsub::Time real_begin = pubsub::Time::now();
+	if (parser.GetBool("p"))
+	{
+		// start paused
+		while (true)
+		{
+			// handle paused
+			printf("\r [PAUSED]  Sack Time: %13.6f   Duration: %.6f / %.6f               \r",
+				pubsub::Time(start_time).toSec(),
+				(pubsub::Time(start_time) - start_time).toSec(),
+				length);
+			fflush(stdout);
+			ps_node_spin(&node);
+			ps_sleep(1);
 
+			if ((_kbhit() && getc(stdin) == ' ') || ps_okay() == false)
+			{
+				break;
+			}
+		}
+	}
+
+	pubsub::Time real_begin = pubsub::Time::now();
 	// now lets start publishing each message
 	for (int i = 0; i < index.size(); i++)
 	{
@@ -967,7 +1036,7 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 					pubsub::Time(hdr->time).toSec(),
 					(pubsub::Time(hdr->time) - start_time).toSec(),
 					length);
-
+				fflush(stdout);
 				ps_node_spin(&node);
 				ps_sleep(1);
 
@@ -1042,6 +1111,7 @@ int main(int argc, char** argv)
 		parser.SetUsage("Usage: rucksack play FILE... [OPTION...]\n\nPlays back topics stored in rucksack files.\n");
 		parser.AddMulti({ "r" }, "Rate to play the bag at.", "1.0");
 		parser.AddMulti({ "s" }, "Offset to start playing the bag at.", "0.0");
+		parser.AddMulti({ "p" }, "Start playback paused.", "false");
 
 		parser.Parse(argv, argc, 1);
 
