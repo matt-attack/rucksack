@@ -54,6 +54,18 @@ public:
 	{
 		return header_;
 	}
+
+	inline uint32_t get_version()
+	{
+		return header_.version;
+	}
+};
+
+class SackMigrator
+{
+public:
+
+	static bool Migrate(const std::string& dst, const std::string& src);
 };
 
 class SackWriter
@@ -185,7 +197,7 @@ public:
 			rucksack::ConnectionHeader header;
 			header.header.op_code = rucksack::constants::ConnectionHeaderOp;
 			header.connection_id = writer.id;
-			header.hash = def->hash;
+			header.flags = 0;// todo allow filling this out?
 
 			char buf[1500];
 			int def_len = ps_serialize_message_definition(buf, def);
@@ -253,6 +265,11 @@ public:
 
     // Closes the file.
 	void close();
+
+	inline uint32_t get_version()
+	{
+		return data_.get_header().version;
+	}
 
     // Note that this does not read in time order. It reads out entire chunks at a time (same message).
 	const void* read(rucksack::MessageHeader const *& out_hdr, SackChannelDetails const*& out_info);

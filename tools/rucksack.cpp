@@ -27,7 +27,6 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <termios.h>
-//#include <stropts.h>
 
 int _kbhit() {
     static const int STDIN = 0;
@@ -90,6 +89,7 @@ struct TopicData
 	std::string topic;
 	std::string type;
 	uint32_t hash;
+	bool latched;
 };
 std::map<std::string, TopicData> _topics;
 
@@ -123,6 +123,7 @@ struct Channel
 std::vector<Channel*> _channels;
 uint32_t _channel_id = 0;
 FILE* _current_sack_file = 0;
+double _current_sack_size = 0;
 
 void record(pubsub::ArgParser& parser)
 {
@@ -141,7 +142,19 @@ void record(pubsub::ArgParser& parser)
 		return;
 	}
 
-	bool split = parser.GetBool("split");
+	double split_size = parser.GetDouble("ss");
+	double split_duration = parser.GetDouble("sd");
+
+	if (split_size <= 0.0)
+	{
+		split_size = std::numeric_limits<double>::max();
+	}
+
+	auto ps_spit_duration = pubsub::Duration(std::numeric_limits<int64_t>::max());
+	if (split_duration > 0.0)
+	{
+		ps_spit_duration = pubsub::Duration(split_duration);
+	}
 
 	printf("Recording to '%s'\n", filename.c_str());
 	
@@ -187,6 +200,7 @@ void record(pubsub::ArgParser& parser)
 		tdata.topic = topic;
 		tdata.type = type;
 		tdata.hash = data->type_hash;
+		tdata.latched = ((data->flags & PS_ADVERTISE_LATCHED) != 0) ? true : false;
 		_topics[topic] = tdata;
 	};
 
@@ -209,7 +223,7 @@ void record(pubsub::ArgParser& parser)
 				rucksack::ConnectionHeader header;
 				header.header.op_code = rucksack::constants::ConnectionHeaderOp;
 				header.connection_id = chunk.channel->id;
-				header.hash = chunk.channel->topic.hash;
+				header.flags = chunk.channel->topic.latched ? rucksack::constants::CHFLAG_LATCHED : 0;
 
 				char buf[1500];
 				int def_len = ps_serialize_message_definition(buf, &chunk.channel->sub.received_message_def);
@@ -260,10 +274,11 @@ void record(pubsub::ArgParser& parser)
 	printf("Starting recording...\n");
 
 	//write the header
+	auto start_time = pubsub::Time::now();
 	rucksack::Header header;
 	header.magic_number = rucksack::constants::MagicNumber;
-	header.start_time = pubsub::Time::now().usec;
-	header.version = 1;
+	header.start_time = start_time.usec;
+	header.version = rucksack::constants::CurrentVersion;
 	fwrite(&header, sizeof(header), 1, _current_sack_file);
 
 	static int count = 0;
@@ -316,6 +331,8 @@ void record(pubsub::ArgParser& parser)
 			}
 			else
 			{
+				_current_sack_size += size*0.000001;
+
 				// check if we saved the channel, if not do that
 				if (channel->written == false)
 				{
@@ -397,54 +414,52 @@ void record(pubsub::ArgParser& parser)
 	int bag_number = 1;
 	while (ps_okay())
 	{
+		auto now = pubsub::Time::now();
+		pubsub::Duration bag_duration = now - header.start_time;
+		pubsub::Duration total_duration = now - start_time;
+
 		// Check if we should stop
-		if (count >= max_count)
+		if (count >= max_count || total_duration > max_length)
 		{
 			break;
 		}
 
-		// Check if we should stop or split for going over time
-		if (pubsub::Time::now() - header.start_time) > max_length)
+		// Check if we should split for going over time or size
+		if (bag_duration > ps_spit_duration || _current_sack_size > split_size)
 		{
-            if (split)
-            {
-                // Save any open chunks and swap to a new file
-	            for (auto& ch : _channels)
-	            {
-                    auto& chunk = ch->open_chunk;
-		            if (chunk.data && chunk.current_position > 0)
-		            {
-                        chunk.header.end_time = ch->open_chunk_last_message_time.usec;
-                        chunk.file = _current_sack_file;
-						_chunk_mutex.lock();
-						_finished_chunks.push_back(chunk);
-						_chunk_mutex.unlock();
-                    }
+			// Save any open chunks and swap to a new file
+			for (auto& ch : _channels)
+			{
+				auto& chunk = ch->open_chunk;
+				if (chunk.data && chunk.current_position > 0)
+				{
+					chunk.header.end_time = ch->open_chunk_last_message_time.usec;
+					chunk.file = _current_sack_file;
+					_chunk_mutex.lock();
+					_finished_chunks.push_back(chunk);
+					_chunk_mutex.unlock();
+				}
 
-                    // Reset it for use with the new bag
-                    ch->Reset();
-                }
+				// Reset it for use with the new bag
+				ch->Reset();
+			}
 
-                // Now open a new file to record to
-                std::string bag_name = filename + std::to_string(bag_number);
-                bag_number++;
+			// Now open a new file to record to
+			std::string bag_name = filename + std::to_string(bag_number);
+			bag_number++;
 
-                printf("Recording to new bag '%s'\n", bag_name.c_str());
-                _current_sack_file = fopen(bag_name.c_str(), "wb");
+			printf("Recording to new bag '%s'\n", bag_name.c_str());
+			_current_sack_file = fopen(bag_name.c_str(), "wb");
+			_current_sack_size = 0;
 
-	            // Write the header, this might block a bit in this thread, but meh its rare
-	            //rucksack::Header header;
-	            header.magic_number = rucksack::constants::MagicNumber;
-	            header.start_time = pubsub::Time::now().usec;
-	            header.version = 1;
-	            fwrite(&header, sizeof(header), 1, _current_sack_file);
+			// Write the header, this might block a bit in this thread, but meh its rare
+			//rucksack::Header header;
+			header.magic_number = rucksack::constants::MagicNumber;
+			header.start_time = pubsub::Time::now().usec;
+			header.version = rucksack::constants::CurrentVersion;
+			fwrite(&header, sizeof(header), 1, _current_sack_file);
 
-                files.push_back(_current_sack_file);
-            }
-            else
-            {
-			    break;
-            }
+			files.push_back(_current_sack_file);
 		}
 		// todo blocking
 		ps_node_spin(&node);
@@ -458,9 +473,9 @@ void record(pubsub::ArgParser& parser)
 	pubsub::Time now = pubsub::Time::now();
 	for (auto& ch : _channels)
 	{
+		// save the chunk if open
 		if (ch->open_chunk.data && ch->open_chunk.current_position > 0)
 		{
-			// todo use last message time for end time
 			auto chunk = &ch->open_chunk;
 			// write it then delete it
 			// fill in the rest of the header
@@ -512,6 +527,12 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		return;
 	}
 
+	if (sack.get_version() != rucksack::constants::CurrentVersion)
+	{
+		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
+		return;
+	}
+
 	// quickly grab file size
 	FILE* f = fopen(file.c_str(), "rb");
 	fseek(f, 0, SEEK_END); // seek to end of file
@@ -529,7 +550,8 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		std::string type;
 		int count;
 		uint32_t hash;
-        ps_message_definition_t definition;
+		bool latched;
+		ps_message_definition_t definition;
 	};
 
 	std::vector<ChannelInfo> channels;
@@ -563,6 +585,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			details.type = details.definition.name;
 			details.count = 0;
 			details.hash = details.definition.hash;
+			details.latched = (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0;
 			channels[header->connection_id] = details;
 		}
 		else if (op_code == rucksack::constants::DataChunkOp)
@@ -648,7 +671,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	for (auto& details: channels)
 	{
 		double rate = (double)details.count / duration.toSec();
-		printf("  %s    %u msgs @ %0.1lf Hz : %s\n", details.topic.c_str(), details.count, rate, details.type.c_str());
+		printf("  %s    %u msgs @ %0.1lf Hz : %s%s\n", details.topic.c_str(), details.count, rate, details.type.c_str(), details.latched ? " (latched)" : "");
 	}
 
     // Free the channel infos
@@ -668,12 +691,18 @@ void print(const std::string& file)
 		return;
 	}
 
+	if (sack.get_version() != rucksack::constants::CurrentVersion)
+	{
+		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
+		return;
+	}
+
 	rucksack::MessageHeader const* hdr;
 	rucksack::SackChannelDetails const* def;
 	while (const void* msg = sack.read(hdr, def))
 	{
 		printf("topic: %s\n---\n", def->topic.c_str());
-		ps_deserialize_print(msg, &def->definition, 0);
+		ps_deserialize_print(msg, &def->definition, 0, 0);
 		printf("------------\n");
 	}
 
@@ -683,8 +712,11 @@ void print(const std::string& file)
 //then need to be able to play it back with accurate timing
 //todo, sim time?
 
-void play(const std::string& file, pubsub::ArgParser& parser)
+void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 {
+	// todo handle multiple files
+	auto file = files[0];
+
 	rucksack::Sack sack;
 	if (!sack.open(file))
 	{
@@ -694,7 +726,11 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 	auto header = sack.get_header();
 
-	// todo check version
+	if (sack.get_version() != rucksack::constants::CurrentVersion)
+	{
+		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
+		return;
+	}
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
@@ -762,18 +798,14 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			details.type = def.name;
 			details.publisher = new ps_pub_t;
 			// create the publisher
-			// todo handle latched
-			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, false);
+			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0);
 			channels[header->connection_id] = details;
-
-			//printf("Got connection header\n");
 
 			delete[] chunk_ptr;
 		}
 		else if (op_code == rucksack::constants::DataChunkOp)
 		{
 			rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
-			//printf("Got data chunk\n");
 
 			if (chunk->connection_id >= channels.size())
 			{
@@ -781,8 +813,8 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 				return;
 			}
 
-			// if the chunk is too new, ignore it
-			if (chunk->start_time < start_time.usec)
+			// if the chunk is too old, ignore it
+			if (chunk->end_time < start_time.usec)
 			{
 				delete[] chunk_ptr;
 				continue;
@@ -878,7 +910,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 	pubsub::Time real_begin = pubsub::Time::now();
 
-	// now lets start publishing each chunk
+	// now lets start publishing each message
 	for (int i = 0; i < index.size(); i++)
 	{
 		rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)index[i].ptr;
@@ -895,6 +927,18 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 		while (real_diff = ((pubsub::Time::now().usec - real_begin.usec)*time_scale), (diff > real_diff))// converts to "sim time"
 		{
 			double dt = (diff - real_diff)*inv_time_scale_ms;
+
+			// make sure we dont sleep too long so control c works if the bag is silly
+			if (dt > 500)
+			{
+				dt = 500;
+
+				if (ps_okay() == false)
+				{
+					return;
+				}
+			}
+			    
 			ps_sleep(std::max<int>(dt, 0));
 		}
 
@@ -959,7 +1003,6 @@ void print_help()
 		"   record (topic name)\n");
 }
 
-
 int main(int argc, char** argv)
 {
 	std::string verb = argc > 1 ? argv[1] : "";
@@ -970,11 +1013,12 @@ int main(int argc, char** argv)
 	{
 		parser.SetUsage("Usage: rucksack record TOPIC... [OPTION...]\n\nRecords topics to a file.\n");
 		parser.AddMulti({ "a", "all" }, "Record all topics", "false");
-		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "16");// todo increase me later
+		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "768");
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
 		parser.AddMulti({ "n" }, "Number of messages to record", "-1");
 		parser.AddMulti({ "o" }, "Name of sack file", "");
-        parser.AddMulti({ "split" }, "If true, split into separate sack files.", "false");
+		parser.AddMulti({ "split-size", "ss" }, "Start recording to a new sack file if this file size in MB is exceeded.", "0");
+		parser.AddMulti({ "split-duration", "sd" }, "Start recording to a new sack file if this time period in seconds is exceeded.", "0");
 
 		parser.Parse(argv, argc, 1);
 
@@ -1002,10 +1046,7 @@ int main(int argc, char** argv)
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
-		for (auto file : files)
-		{
-			play(file, parser);
-		}
+		play(files, parser);
 	}
 	else if (verb == "print")
 	{
@@ -1016,6 +1057,32 @@ int main(int argc, char** argv)
 		for (auto file : files)
 		{
 			print(file);
+		}
+	}
+	else if (verb == "migrate")
+	{
+		parser.SetUsage("Usage: rucksack migrate FILE...\n\nMigrates the given rucksack file to the latest format.");
+		parser.AddMulti({"d"}, "Delete migrated sackfiles", "false");
+		parser.Parse(argv, argc, 1);
+
+		// migrate to the current bag version
+		auto files = parser.GetAllPositional();
+		for (auto file : files)
+		{
+			std::string copy = file + ".new";
+			printf("Migrating '%s'...\n", file.c_str());
+
+			bool success = rucksack::SackMigrator::Migrate(copy, file);
+
+			// then delete if wanted + successful
+			if (success && parser.GetBool("d"))
+			{
+				// todo
+			}
+			else if (!success)
+			{
+				printf("Migration failed\n");
+			}
 		}
 	}
     else

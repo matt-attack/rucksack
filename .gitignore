@@ -6,6 +6,10 @@
 *.user
 *.userosscache
 *.sln.docstates
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
