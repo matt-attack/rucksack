@@ -245,6 +245,7 @@ struct SackChannelDetails
 	std::string topic;
 	std::string type;
 	ps_message_definition_t definition;
+	bool latched;
 };
 
 class SackReader

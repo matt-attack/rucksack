@@ -245,6 +245,7 @@ void SackReader::handle_connection_header(const char* chunk)
 	details.definition = def;
 	details.topic = topic;
 	details.type = def.name;
+	details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) > 0);
 	channels_[header->connection_id] = details;
 }
 
