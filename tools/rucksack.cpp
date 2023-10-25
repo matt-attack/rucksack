@@ -30,22 +30,22 @@
 //#include <stropts.h>
 
 int _kbhit() {
-    static const int STDIN = 0;
-    static bool initialized = false;
+	static const int STDIN = 0;
+	static bool initialized = false;
 
-    if (! initialized) {
-        // Use termios to turn off line buffering
-        termios term;
-        tcgetattr(STDIN, &term);
-        term.c_lflag &= ~ICANON;
-        tcsetattr(STDIN, TCSANOW, &term);
-        setbuf(stdin, NULL);
-        initialized = true;
-    }
+	if (!initialized) {
+		// Use termios to turn off line buffering
+		termios term;
+		tcgetattr(STDIN, &term);
+		term.c_lflag &= ~ICANON;
+		tcsetattr(STDIN, TCSANOW, &term);
+		setbuf(stdin, NULL);
+		initialized = true;
+	}
 
-    int bytesWaiting;
-    ioctl(STDIN, FIONREAD, &bytesWaiting);
-    return bytesWaiting;
+	int bytesWaiting;
+	ioctl(STDIN, FIONREAD, &bytesWaiting);
+	return bytesWaiting;
 }
 #endif
 
@@ -113,6 +113,86 @@ struct Channel
 std::vector<Channel*> _channels;
 uint32_t _channel_id = 0;
 
+inline void HandleMessage(Channel* channel, void* message, unsigned int size, pubsub::Time now)
+{
+	// get and deserialize the messages
+
+		// check if we saved the channel, if not do that
+	if (channel->written == false)
+	{
+		// now that we have message definition we can save the data in a chunk
+		QueueChannel ch_data;
+		ch_data.channel = channel;
+		_channel_mutex.lock();
+		_finished_channels.push_back(ch_data);
+		_channel_mutex.unlock();
+		channel->written = true;
+	}
+
+	auto& chunk = channel->open_chunk;
+	//write it into our current chunk for this subcriber
+
+	//check if this message is too big for the rest of the chunk, if it is, save what we have then start a new one thats at least the size of it
+
+	const int chunk_size = channel->chunk_size;// todo change this to be a parameter and make it bigger
+	if (chunk.data == 0)
+	{
+		// we can allocate it
+		chunk.header.start_time = now.usec;
+		chunk.header.connection_id = channel->id;
+		int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+		chunk.data = new char[buf_size];
+		chunk.current_position = 0;
+	}
+	else
+	{
+		// check if we have enough space, if not push out old chunk
+		// if we are past the chunk size, start a new one and push this one
+		if (chunk.current_position + size + sizeof(rucksack::MessageHeader) >= chunk_size)
+		{
+			chunk.header.end_time = now.usec;
+			_chunk_mutex.lock();
+			_finished_chunks.push_back(chunk);
+			_chunk_mutex.unlock();
+
+			// start new chunk
+			chunk.header.start_time = now.usec;
+			chunk.header.connection_id = channel->id;
+			int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+			chunk.data = new char[buf_size];
+			chunk.current_position = 0;
+		}
+	}
+
+	//first write the message header
+	rucksack::MessageHeader header;
+	header.length = size;
+	header.time = now.usec;
+	memcpy(chunk.data + chunk.current_position, &header, sizeof(header));
+	chunk.current_position += sizeof(header);
+
+	// then write the data
+	memcpy(chunk.data + chunk.current_position, message, size);
+	chunk.current_position += size;
+
+	free(message);
+}
+
+std::vector<std::string> split(std::string s, std::string delimiter) {
+	size_t pos_start = 0, pos_end, delim_len = delimiter.length();
+	std::string token;
+	std::vector<std::string> res;
+
+	while ((pos_end = s.find(delimiter, pos_start)) != std::string::npos) {
+		token = s.substr(pos_start, pos_end - pos_start);
+		pos_start = pos_end + delim_len;
+		res.push_back(token);
+	}
+
+	res.push_back(s.substr(pos_start));
+	return res;
+}
+
 void record(pubsub::ArgParser& parser)
 {
 	std::string filename = std::to_string(std::round(pubsub::Time::now().toSec())) + ".sack";
@@ -122,7 +202,7 @@ void record(pubsub::ArgParser& parser)
 	}
 
 	printf("Recording to '%s'\n", filename.c_str());
-	
+
 	// open the file
 	FILE* f = fopen(filename.c_str(), "wb");
 
@@ -137,15 +217,15 @@ void record(pubsub::ArgParser& parser)
 	{
 		max_length = pubsub::Duration(parser.GetDouble("d"));
 	}
-	const int chunk_size = parser.GetDouble("c")*1000;
+	const int chunk_size = parser.GetDouble("c") * 1000;
 
 	// first lets get a list of all topics, and then subscribe to them
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
-	
+
 	struct ps_transport_t tcp_transport;
-    ps_tcp_transport_init(&tcp_transport, &node);
-    ps_node_add_transport(&node, &tcp_transport);
+	ps_tcp_transport_init(&tcp_transport, &node);
+	ps_node_add_transport(&node, &tcp_transport);
 
 	ps_node_system_query(&node);
 
@@ -158,7 +238,7 @@ void record(pubsub::ArgParser& parser)
 		}
 
 		printf("Found topic %s..\n", topic);
-		
+
 		TopicData tdata;
 		tdata.topic = topic;
 		tdata.type = type;
@@ -169,67 +249,67 @@ void record(pubsub::ArgParser& parser)
 	static bool recording = true;
 	// create the data saving thread
 	std::thread saver([f]()
-	{
-		while (ps_okay() && recording)
 		{
-			// check for channels and save em if we have em
-			std::vector<QueueChannel> ch_to_save;
-			_channel_mutex.lock();
-			std::swap(ch_to_save, _finished_channels);
-			_channel_mutex.unlock();
-
-			// now write each of the connection headers to the file
-			for (auto& chunk : ch_to_save)
+			while (ps_okay() && recording)
 			{
-				//printf("Saving channel for topic\n");
-				rucksack::ConnectionHeader header;
-				header.header.op_code = rucksack::constants::ConnectionHeaderOp;
-				header.connection_id = chunk.channel->id;
-				header.hash = chunk.channel->topic.hash;
+				// check for channels and save em if we have em
+				std::vector<QueueChannel> ch_to_save;
+				_channel_mutex.lock();
+				std::swap(ch_to_save, _finished_channels);
+				_channel_mutex.unlock();
 
-				char buf[1500];
-				int def_len = ps_serialize_message_definition(buf, &chunk.channel->sub.received_message_def);
+				// now write each of the connection headers to the file
+				for (auto& chunk : ch_to_save)
+				{
+					//printf("Saving channel for topic\n");
+					rucksack::ConnectionHeader header;
+					header.header.op_code = rucksack::constants::ConnectionHeaderOp;
+					header.connection_id = chunk.channel->id;
+					header.hash = chunk.channel->topic.hash;
 
-				int data_length = def_len + chunk.channel->topic.topic.length() + 1;
-				header.header.length_bytes = data_length + sizeof(header);
-				fwrite(&header, sizeof(header), 1, f);
+					char buf[1500];
+					int def_len = ps_serialize_message_definition(buf, &chunk.channel->sub.received_message_def);
 
-				// then goes the topic name string
-				fwrite(chunk.channel->topic.topic.c_str(), 1, chunk.channel->topic.topic.length() + 1, f);
+					int data_length = def_len + chunk.channel->topic.topic.length() + 1;
+					header.header.length_bytes = data_length + sizeof(header);
+					fwrite(&header, sizeof(header), 1, f);
 
-				// then the message definition
-				fwrite(buf, def_len, 1, f);
+					// then goes the topic name string
+					fwrite(chunk.channel->topic.topic.c_str(), 1, chunk.channel->topic.topic.length() + 1, f);
+
+					// then the message definition
+					fwrite(buf, def_len, 1, f);
+				}
+
+				// check for chunks and save em if we have em
+				std::vector<QueueChunk> to_save;
+				_chunk_mutex.lock();
+				std::swap(to_save, _finished_chunks);
+				_chunk_mutex.unlock();
+
+				// now write each of the chunks to the file
+				for (auto& chunk : to_save)
+				{
+					//printf("Saving chunk for topic %i\n", chunk.header.connection_id);
+					// fill in the rest of the header
+					chunk.header.header.op_code = rucksack::constants::DataChunkOp;
+					chunk.header.header.length_bytes = chunk.current_position + sizeof(chunk.header);
+
+					// write header
+					fwrite(&chunk.header, sizeof(chunk.header), 1, f);
+
+					// write body
+					fwrite(chunk.data, 1, chunk.current_position, f);
+
+					delete[] chunk.data;
+				}
+
+				// todo warn if we are getting behind
+
+				// todo block
+				ps_sleep(1);
 			}
-
-			// check for chunks and save em if we have em
-			std::vector<QueueChunk> to_save;
-			_chunk_mutex.lock();
-			std::swap(to_save, _finished_chunks);
-			_chunk_mutex.unlock();
-
-			// now write each of the chunks to the file
-			for (auto& chunk : to_save)
-			{
-				//printf("Saving chunk for topic %i\n", chunk.header.connection_id);
-				// fill in the rest of the header
-				chunk.header.header.op_code = rucksack::constants::DataChunkOp;
-				chunk.header.header.length_bytes = chunk.current_position + sizeof(chunk.header);
-
-				// write header
-				fwrite(&chunk.header, sizeof(chunk.header), 1, f);
-
-				// write body
-				fwrite(chunk.data, 1, chunk.current_position, f);
-
-				delete[] chunk.data;
-			}
-
-			// todo warn if we are getting behind
-			
-			// todo block
-			ps_sleep(1);
-		}
-	});
+		});
 
 	wait(&node);
 
@@ -242,20 +322,68 @@ void record(pubsub::ArgParser& parser)
 	header.version = 1;
 	fwrite(&header, sizeof(header), 1, f);
 
-	auto topics_to_record = parser.GetAllPositional();
+	auto raw_topics_to_record = parser.GetAllPositional();
+
+	struct TopicInfo
+	{
+		std::string topic;
+		int skip_factor;
+	};
+	std::vector<TopicInfo> topics_to_record;
+	for (auto& topic : raw_topics_to_record)
+	{
+		auto splits = split(topic, ":");
+		TopicInfo ti;
+		ti.topic = splits[0];
+		if (splits.size() > 1)
+		{
+			ti.skip_factor = std::atoi(splits[1].c_str());
+		}
+		else
+		{
+			ti.skip_factor = 0;
+		}
+		topics_to_record.push_back(ti);
+	}
+
+	struct TodoMsg
+	{
+		void* data;
+		unsigned int length;
+		Channel* channel;
+		pubsub::Time time;
+	};
+	static std::vector<TodoMsg> todo_msgs;
+	node.def_cb = [](const struct ps_message_definition_t* definition)
+	{
+		for (int i = 0; i < todo_msgs.size(); i++)
+		{
+			auto& msg = todo_msgs[i];
+			if (msg.channel->sub.received_message_def.fields != 0)
+			{
+				// good to process
+				HandleMessage(msg.channel, msg.data, msg.length, msg.time);
+
+				todo_msgs.erase(todo_msgs.begin() + i);
+				i--;
+			}
+		}
+	};
 
 	static int count = 0;
 	// now subscribe to things!
 	node.adv_cb = 0;// todo dont do this
-	for (auto& topic: _topics)
+	for (auto& topic : _topics)
 	{
 		// see if we found it
 		bool found = false;
-		for (auto& t: topics_to_record)
+		int skip_factor = 0;
+		for (auto& t : topics_to_record)
 		{
-			if (topic.first == t)
+			if (topic.first == t.topic)
 			{
 				found = true;
+				skip_factor = t.skip_factor;
 				break;
 			}
 		}
@@ -263,12 +391,12 @@ void record(pubsub::ArgParser& parser)
 		{
 			continue;
 		}
-		
+
 		printf("Subscribing to %s\n", topic.first.c_str());
 		struct ps_subscriber_options options;
 		ps_subscriber_options_init(&options);
 		options.preferred_transport = 1;// prefer tcp
-		options.skip = 0;
+		options.skip = skip_factor;
 		options.queue_size = 0;
 		options.want_message_def = true;
 		options.allocator = 0;
@@ -285,75 +413,19 @@ void record(pubsub::ArgParser& parser)
 			Channel* channel = (Channel*)data;
 
 			pubsub::Time now = pubsub::Time::now();
-			// get and deserialize the messages
 			if (channel->sub.received_message_def.fields == 0)
 			{
-				printf("WARN: got message but no message definition yet...\n");
 				// queue it up, then print them out once I get it
-				//todo_msgs.push_back({ message, *info });
+				TodoMsg msg;
+				msg.data = message;
+				msg.length = size;
+				msg.channel = channel;
+				msg.time = now;
+				todo_msgs.push_back(msg);
+				return;
 			}
-			else
-			{
-				// check if we saved the channel, if not do that
-				if (channel->written == false)
-				{
-					// now that we have message definition we can save the data in a chunk
-					QueueChannel ch_data;
-					ch_data.channel = channel;
-					_channel_mutex.lock();
-					_finished_channels.push_back(ch_data);
-					_channel_mutex.unlock();
-					channel->written = true;
-				}
 
-				auto& chunk = channel->open_chunk;
-				//write it into our current chunk for this subcriber
-
-				//check if this message is too big for the rest of the chunk, if it is, save what we have then start a new one thats at least the size of it
-
-				const int chunk_size = channel->chunk_size;// todo change this to be a parameter and make it bigger
-				if (chunk.data == 0)
-				{
-					// we can allocate it
-					chunk.header.start_time = now.usec;
-					chunk.header.connection_id = channel->id;
-					int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
-					chunk.data = new char[buf_size];
-					chunk.current_position = 0;
-				}
-				else
-				{
-					// check if we have enough space, if not push out old chunk
-					// if we are past the chunk size, start a new one and push this one
-					if (chunk.current_position + size + sizeof(rucksack::MessageHeader) >= chunk_size)
-					{
-						chunk.header.end_time = now.usec;
-						_chunk_mutex.lock();
-						_finished_chunks.push_back(chunk);
-						_chunk_mutex.unlock();
-
-						// start new chunk
-						chunk.header.start_time = now.usec;
-						chunk.header.connection_id = channel->id;
-						int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
-						chunk.data = new char[buf_size];
-						chunk.current_position = 0;
-					}
-				}
-
-				//first write the message header
-				rucksack::MessageHeader header;
-				header.length = size;
-				header.time = now.usec;
-				memcpy(chunk.data+chunk.current_position, &header, sizeof(header));
-				chunk.current_position += sizeof(header);
-
-				// then write the data
-				memcpy(chunk.data+chunk.current_position, message, size);
-				chunk.current_position += size;
-
-				free(message);
-			}
+			HandleMessage(channel, message, size, now);
 		};
 
 		Channel* new_channel = new Channel;
@@ -422,6 +494,12 @@ void record(pubsub::ArgParser& parser)
 	fclose(f);
 
 	printf("Recorded %i messages\n", count);
+
+	// warn about any messages we never actually saved because we didnt get a message definition
+	if (todo_msgs.size())
+	{
+		printf("WARNING: Dropped %i messages because we couldn't find their message definition.\n", todo_msgs.size());
+	}
 }
 
 struct ChannelDetails
@@ -446,7 +524,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		return;
 	}
 
-    bool verbose = parser.GetBool("v");
+	bool verbose = parser.GetBool("v");
 
 	auto header = sack.get_header();
 
@@ -456,7 +534,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		std::string type;
 		int count;
 		uint32_t hash;
-        ps_message_definition_t definition;
+		ps_message_definition_t definition;
 	};
 
 	std::vector<ChannelInfo> channels;
@@ -474,9 +552,9 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			// read in the details about this topic/connection
 			const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
 
-            ChannelInfo details;
+			ChannelInfo details;
 			ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
-                                              &details.definition);
+				&details.definition);
 
 			// todo handle duplicate message definitions/channels when we playback multiple files
 
@@ -485,7 +563,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			{
 				channels.resize(header->connection_id + 1);
 			}
-			
+
 			details.topic = topic;
 			details.type = details.definition.name;
 			details.count = 0;
@@ -573,13 +651,13 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	for (auto& type : types)
 	{
 		printf("  %s [%x]\n", type.first.c_str(), type.second.hash);
-        if (verbose)
-        {
-           // print out the message definition
-           printf("-----------------\n");
-           ps_print_definition(&type.second.definition, false);
-           printf("-----------------\n");
-        }
+		if (verbose)
+		{
+			// print out the message definition
+			printf("-----------------\n");
+			ps_print_definition(&type.second.definition, false);
+			printf("-----------------\n");
+		}
 	}
 
 	printf("topics:\n");
@@ -589,11 +667,11 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		printf("  %s    %u msgs @ %0.1lf Hz : %s\n", details.topic.c_str(), details.count, rate, details.type.c_str());
 	}
 
-    // Free the channel infos
-    for (auto& info: channels)
-    {
-        ps_free_message_definition(&info.definition);
-    }
+	// Free the channel infos
+	for (auto& info : channels)
+	{
+		ps_free_message_definition(&info.definition);
+	}
 }
 
 // todo print out in order
@@ -635,7 +713,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
-	
+
 	struct ps_transport_t tcp_transport;
 	ps_tcp_transport_init(&tcp_transport, &node);
 	ps_node_add_transport(&node, &tcp_transport);
@@ -649,7 +727,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 		void Release()
 		{
-            ps_free_message_definition(definition.get());
+			ps_free_message_definition(definition.get());
 			delete publisher;
 		}
 	};
@@ -695,7 +773,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			// todo message definition leaks
 			ChannelOutput details;
 			// todo properly free the definition
-			details.definition = std::make_shared<ps_message_definition_t>(def);			
+			details.definition = std::make_shared<ps_message_definition_t>(def);
 			details.topic = std::shared_ptr<char[]>(new char[strlen(topic) + 1]);
 			strcpy(details.topic.get(), topic);
 			details.type = def.name;
@@ -743,11 +821,11 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 	// sort chunks by start time  (should already be in order honestly...)
 	std::sort(chunks.begin(), chunks.end(),
 		[](const ChunkInfo& a, const ChunkInfo& b) -> bool
-	{
-		const rucksack::DataChunk* header_a = (const rucksack::DataChunk*)a.block;
-		const rucksack::DataChunk* header_b = (const rucksack::DataChunk*)b.block;
-		return header_a->start_time < header_b->start_time;
-	});
+		{
+			const rucksack::DataChunk* header_a = (const rucksack::DataChunk*)a.block;
+			const rucksack::DataChunk* header_b = (const rucksack::DataChunk*)b.block;
+			return header_a->start_time < header_b->start_time;
+		});
 
 	// now build index by looping over chunks
 	struct MessageIndex
@@ -787,7 +865,7 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 			off += hdr->length + sizeof(rucksack::MessageHeader);
 
-            // Ignore this message if it's before our start time
+			// Ignore this message if it's before our start time
 			if (idx.time < start_time.usec)
 			{
 				continue;
@@ -795,20 +873,20 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 			index.push_back(idx);
 		}
 	}
-	
+
 	// I guess lets just sort by time?
 	std::sort(index.begin(), index.end(),
 		[](const MessageIndex& a, const MessageIndex& b) -> bool
-	{
-		return a.time < b.time;
-	});
+		{
+			return a.time < b.time;
+		});
 
 	printf("Done sorting...\n");
 
 	// give the node a bit to advertise
 	wait(&node);
 
-	
+
 	const double length = (pubsub::Time(last_time) - start_time).toSec();
 
 	const double time_scale = parser.GetDouble("r");
@@ -831,9 +909,9 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 		// wait until the next message
 		double diff = (hdr->time - start_time.usec);
 		double real_diff;
-		while (real_diff = ((pubsub::Time::now().usec - real_begin.usec)*time_scale), (diff > real_diff))// converts to "sim time"
+		while (real_diff = ((pubsub::Time::now().usec - real_begin.usec) * time_scale), (diff > real_diff))// converts to "sim time"
 		{
-			double dt = (diff - real_diff)*inv_time_scale_ms;
+			double dt = (diff - real_diff) * inv_time_scale_ms;
 			ps_sleep(std::max<int>(dt, 0));
 		}
 
@@ -888,18 +966,18 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 
 	ps_node_destroy(&node);
 
-    // Free the channel infos
-    for (auto& info: channels)
-    {
-        info.Release();
-    }
+	// Free the channel infos
+	for (auto& info : channels)
+	{
+		info.Release();
+	}
 }
 
 void print_help()
 {
 	printf("Usage: rucksack <verb> (arg1) (arg2) ...\n"
 		" Verbs:\n"
-        "   info (file names)\n"
+		"   info (file names)\n"
 		"   play (file names)\n"
 		"   print (file names)\n"
 		"   record (topic name)\n");
@@ -965,10 +1043,10 @@ int main(int argc, char** argv)
 			print(file);
 		}
 	}
-    else
-    {
-        // give top level help
-        print_help();
-    }
+	else
+	{
+		// give top level help
+		print_help();
+	}
 	return 0;
 }
