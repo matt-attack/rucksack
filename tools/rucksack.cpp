@@ -498,7 +498,7 @@ void record(pubsub::ArgParser& parser)
 	// warn about any messages we never actually saved because we didnt get a message definition
 	if (todo_msgs.size())
 	{
-		printf("WARNING: Dropped %i messages because we couldn't find their message definition.\n", todo_msgs.size());
+		printf("WARNING: Dropped %zi messages because we couldn't find their message definition.\n", todo_msgs.size());
 	}
 }
 
@@ -628,17 +628,21 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	}
 	printf("messages:   %u\n", total);
 
-	if (size > 1000 * 1000)
+	if (size > 1000 * 1000 * 1000)
+	{
+		printf("size:       %0.3f GB\n", size / 1000000000.0);
+	}
+	else if (size > 1000 * 1000)
 	{
 		printf("size:       %0.3f MB\n", size / 1000000.0);
 	}
-	else if (size > 1000 * 1000)
+	else if (size > 1000)
 	{
 		printf("size:       %0.3f KB\n", size / 1000.0);
 	}
 	else
 	{
-		printf("size:       %u bytes\n", size);
+		printf("size:       %lu bytes\n", size);
 	}
 
 	// build a list of message types (sort and deduplicate)
