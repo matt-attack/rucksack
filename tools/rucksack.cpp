@@ -638,7 +638,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	}
 	else
 	{
-		printf("size:       %ld bytes\n", size);
+		printf("size:       %" PRIu64 " bytes\n", size);
 	}
 
 	unsigned int total = 0;
