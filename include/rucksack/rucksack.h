@@ -8,9 +8,13 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <algorithm>
 
 #include <stdio.h>
 #include <cstring>
+
+#undef min
+#undef max
 
 namespace rucksack
 {
