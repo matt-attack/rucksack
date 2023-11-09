@@ -90,6 +90,7 @@ class SackWriter
 			{
 				// we can allocate it (make sure its at least as big as this message)
 				open_chunk.header.start_time = time.usec;
+				open_chunk.header.end_time = time.usec;
 				open_chunk.header.connection_id = id;
 				int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
 				open_chunk.data = new char[buf_size];
@@ -101,18 +102,21 @@ class SackWriter
 				// if we are past the chunk size, start a new one and push this one
 				if (open_chunk.current_position + size + sizeof(rucksack::MessageHeader) >= chunk_size)
 				{
-					open_chunk.header.end_time = time.usec;
-
-                    flush(f);
+					flush(f);
 
 					// start new chunk (make sure its at least as big as this message)
 					open_chunk.header.start_time = time.usec;
+					open_chunk.header.end_time = time.usec;
 					open_chunk.header.connection_id = id;
 					int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
 					open_chunk.data = new char[buf_size];
 					open_chunk.current_position = 0;
 				}
 			}
+
+			// update timestamps
+			open_chunk.header.start_time = std::min(open_chunk.header.start_time, time.usec);
+			open_chunk.header.end_time = std::max(open_chunk.header.end_time, time.usec);
 
 			//first write the message header
 			rucksack::MessageHeader header;
@@ -168,6 +172,13 @@ public:
     // Returns if successful. Fails if there is a message definition mismatch for the topic.
     bool write_message(const std::string& topic, const ps_msg_t& msg, const ps_message_definition_t* def, pubsub::Time time = pubsub::Time::now())
     {
+        return write_message(topic, ps_get_msg_start(msg.data), msg.len, def, time);
+    }
+
+    // Writes a single already encoded message to the bag file
+    // Returns if successful. Fails if there is a message definition mismatch for the topic.
+    bool write_message(const std::string& topic, const void* msg, uint32_t msg_size, const ps_message_definition_t* def, pubsub::Time time = pubsub::Time::now())
+    {
         // if we havent had this topic before, create a channel
         auto iter = channels_.find(topic);
         if (iter == channels_.end())
@@ -200,13 +211,13 @@ public:
 			// then the message definition
 			fwrite(buf, def_len, 1, f_);
         }
-        else if (iter->second.def != def)
+        else if (iter->second.def->hash != def->hash)
         {
             return false;
         }
 
         // Add to the channel
-        iter->second.write(f_, time, ps_get_msg_start(msg.data), msg.len);
+        iter->second.write(f_, time, msg, msg_size);
 
         return true;
     }
@@ -256,6 +267,12 @@ public:
 
     // Note that this does not read in time order. It reads out entire chunks at a time (same message).
 	const void* read(rucksack::MessageHeader const *& out_hdr, SackChannelDetails const*& out_info);
+
+	// Get's the header from the loaded file
+	inline const rucksack::Header& get_header()
+	{
+		return data_.get_header();
+	}
 
 private:
 

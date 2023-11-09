@@ -679,7 +679,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 }
 
 // todo print out in order
-void print(const std::string& file)
+void print(const std::string& file, pubsub::ArgParser& parser)
 {
 	rucksack::SackReader sack;
 	if (!sack.open(file))
@@ -688,10 +688,16 @@ void print(const std::string& file)
 		return;
 	}
 
+	bool verbose = parser.GetBool("v");
+
 	rucksack::MessageHeader const* hdr;
 	rucksack::SackChannelDetails const* def;
 	while (const void* msg = sack.read(hdr, def))
 	{
+		if (verbose)
+		{
+			printf("timestamp: %" PRIu64 "\n", hdr->time);
+		}
 		ps_deserialize_print(msg, &def->definition, 0, 0);
 		printf("------------\n");
 	}
@@ -702,8 +708,9 @@ void print(const std::string& file)
 //then need to be able to play it back with accurate timing
 //todo, sim time?
 
-void play(const std::string& file, pubsub::ArgParser& parser)
+void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 {
+	std::string file = files[0];
 	rucksack::Sack sack;
 	if (!sack.open(file))
 	{
@@ -977,6 +984,63 @@ void play(const std::string& file, pubsub::ArgParser& parser)
 	}
 }
 
+void merge(std::vector<std::string> files, pubsub::ArgParser& parser)
+{
+	// Create the file
+	rucksack::SackWriter osack;
+
+	std::string out_file = parser.GetString("o");
+	if (out_file.length() == 0)
+	{
+		printf("ERROR: Must provide output file name.\n");
+		return;
+	}
+
+	// load each file and get the lowest start time
+	pubsub::Time start_time = pubsub::Time(std::numeric_limits<uint64_t>::max());
+	std::vector<rucksack::SackReader*> sacks;
+	for (auto& file: files)
+	{
+		auto sack = new rucksack::SackReader();
+		if (!sack->open(file))
+		{
+			printf("ERROR: Opening sack '%s' failed!\n", file.c_str());
+			return;
+		}
+		sacks.push_back(sack);
+
+		auto header = sack->get_header();
+		if (start_time > pubsub::Time(header.start_time))
+		{
+			start_time = pubsub::Time(header.start_time);
+		}
+	}
+
+	// todo need chunk size
+	osack.create(out_file, start_time, 10000);
+
+	for (auto& sack: sacks)
+	{
+		rucksack::MessageHeader const* hdr;
+		rucksack::SackChannelDetails const* info;
+		while (const void* msg = sack->read(hdr, info))
+		{
+			if (!osack.write_message(info->topic, msg, hdr->length, &info->definition, pubsub::Time(hdr->time)))
+			{
+				printf("ERROR: Messages on topic '%s' had mismatched definitions.\n", info->topic.c_str());
+				return;
+			}
+		}
+	}
+
+	for (auto& file: sacks)
+	{
+		delete file;
+	}
+
+	osack.close();
+}
+
 void print_help()
 {
 	printf("Usage: rucksack <verb> (arg1) (arg2) ...\n"
@@ -1030,22 +1094,28 @@ int main(int argc, char** argv)
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
-		for (auto file : files)
-		{
-			play(file, parser);
-		}
+		play(files, parser);
 	}
 	else if (verb == "print")
 	{
-		//parser.AddMulti({ "a", "all" }, "Record all topics", "true");
 		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
+		parser.AddMulti({ "v" }, "Print timestamps along with each message.", "false");
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
 		for (auto file : files)
 		{
-			print(file);
+			print(file, parser);
 		}
+	}
+	else if (verb == "merge")
+	{
+		// merges two sack files into one
+		parser.SetUsage("Usage: rucksack merge FILE... -o OUTPUT_FILE\n\nCombines the contents of multiple sack files into one.");
+		parser.AddMulti({ "o", "output" }, "Name for output combined sack file.", "");
+		parser.Parse(argv, argc, 1);
+
+		merge(parser.GetAllPositional(), parser);
 	}
 	else
 	{
