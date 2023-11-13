@@ -72,6 +72,13 @@ char* Sack::read_block(char& out_opcode)
 	// read in the whole chunk
 	char* chunk = new char[bheader.length_bytes];
 	fread(chunk, bheader.length_bytes, 1, f_);
+
+	// perform any in-place migrations
+	if (bheader.op_code == rucksack::constants::op_codes::ConnectionHeaderOp && header_.version == 1)
+	{
+		auto ch = (ConnectionHeaderV1*)chunk;
+		ch->hash = 0;// hash becomes flags, zero it out so we dont mess anything up
+	}
 	return chunk;
 }
 
@@ -248,17 +255,6 @@ void SackReader::handle_connection_header(const char* chunk)
 	details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) > 0);
 	channels_[header->connection_id] = details;
 }
-
-struct ConnectionHeaderV1 // from v1 bags
-{
-	ChunkHeader header;
-
-	uint32_t connection_id;// incrementing id given to this connection
-	uint32_t hash;
-	// then goes the topic name string
-	// the type name string 
-	// then the message definition
-};
 
 bool SackMigrator::Migrate(const std::string& dst, const std::string& src)
 {

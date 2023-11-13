@@ -582,11 +582,6 @@ struct ChannelDetails
 	std::string type;
 	ps_message_definition_t definition;
 };
-//okay, lets add utility functions now that the basics work
-//need to be able to see the info of a rucksack, aka message count and list of topics
-//as well as length in human readable form
-
-//then need to be able to print out a rucksack, like below
 
 void info(const std::string& file, pubsub::ArgParser& parser)
 {
@@ -595,12 +590,6 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	if (!sack.open(file))
 	{
 		printf("ERROR: Opening sack failed!\n");
-		return;
-	}
-
-	if (sack.get_version() != rucksack::constants::CurrentVersion)
-	{
-		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
 		return;
 	}
 
@@ -772,12 +761,6 @@ void print(const std::string& file, pubsub::ArgParser& parser)
 		return;
 	}
 
-	if (sack.get_version() != rucksack::constants::CurrentVersion)
-	{
-		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
-		return;
-	}
-
 	bool verbose = parser.GetBool("v");
 	int array_count = parser.GetDouble("a");
 
@@ -812,12 +795,6 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	}
 
 	auto header = sack.get_header();
-
-	if (sack.get_version() != rucksack::constants::CurrentVersion)
-	{
-		printf("ERROR: Sackfile is of an old format. Please run 'rucksack migrate %s' to update.\n", file.c_str());
-		return;
-	}
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
@@ -1184,8 +1161,9 @@ void merge(std::vector<std::string> files, pubsub::ArgParser& parser)
 		}
 	}
 
-	// todo need chunk size
-	osack.create(out_file, start_time, 10000);
+	auto chunk_size = parser.GetDouble("c");
+
+	osack.create(out_file, start_time, chunk_size*1000);
 
 	for (auto& sack: sacks)
 	{
@@ -1238,8 +1216,8 @@ int main(int argc, char** argv)
 		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
 		parser.AddMulti({ "n" }, "Number of messages to record", "-1");
 		parser.AddMulti({ "o" }, "Name of sack file", "");
-		parser.AddMulti({ "split-size", "ss" }, "Start recording to a new sack file if this file size in MB is exceeded.", "0");
-		parser.AddMulti({ "split-duration", "sd" }, "Start recording to a new sack file if this time period in seconds is exceeded.", "0");
+		parser.AddMulti({ "split-size", "ss" }, "Start recording to a new sack file if this file size in MB is exceeded. Set to zero to not split based on size.", "0");
+		parser.AddMulti({ "split-duration", "sd" }, "Start recording to a new sack file if this time period in seconds is exceeded. Set to zer to not split based on duration.", "0");
 
 		parser.Parse(argv, argc, 1);
 
@@ -1289,6 +1267,7 @@ int main(int argc, char** argv)
 		// merges two sack files into one
 		parser.SetUsage("Usage: rucksack merge FILE... -o OUTPUT_FILE\n\nCombines the contents of multiple sack files into one.");
 		parser.AddMulti({ "o", "output" }, "Name for output combined sack file.", "");
+		parser.AddMulti({ "c", "chunk-size" }, "Chunk size to use for output sack file in kB.", "768");
 		parser.Parse(argv, argc, 1);
 
 		merge(parser.GetAllPositional(), parser);

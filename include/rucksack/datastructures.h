@@ -69,6 +69,18 @@ struct ConnectionHeader
 	// then the message definition
 };
 
+// previous version of the connection header in v1 bags, used only for conversion purposes
+struct ConnectionHeaderV1
+{
+	ChunkHeader header;
+
+	uint32_t connection_id;// incrementing id given to this connection
+	uint32_t hash;// message hash, unused
+	// then goes the topic name string
+	// the type name string 
+	// then the message definition
+};
+
 // indicates the start of a chunk of messages in the file
 // op code: 0x02
 struct DataChunk
