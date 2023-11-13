@@ -538,9 +538,9 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	};
 
 	std::vector<ChannelInfo> channels;
-
 	// now iterate through each and every chunk
 	uint64_t last_time = 0;
+	uint64_t first_time = std::numeric_limits<uint64_t>::max();
 	unsigned int n_chunks = 0;
 	char op_code;
 	while (char* chunk_ptr = sack.read_block(op_code))
@@ -585,6 +585,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 			// todo maybe should use a map?
 			ChannelInfo* details = &channels[chunk->connection_id];
 
+			first_time = std::min(first_time, chunk->start_time);
 			last_time = std::max(last_time, chunk->end_time);
 
 			// now can go through each message in the chunk
@@ -614,10 +615,11 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	// Now print out the information
 	printf("path:       %s\n", file.c_str());
 	printf("version:    %u\n", header.version);
+	printf("timestamp:  %s\n", pubsub::Time(header.start_time).toString().c_str());
 
-	pubsub::Duration duration = pubsub::Time(last_time) - pubsub::Time(header.start_time);
+	pubsub::Duration duration = pubsub::Time(last_time) - pubsub::Time(first_time);
 	printf("duration:   %lfs\n", duration.toSec());
-	printf("start:      %s\n", pubsub::Time(header.start_time).toString().c_str());
+	printf("start:      %s\n", pubsub::Time(first_time).toString().c_str());
 	printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
 	printf("chunks:     %u\n", n_chunks);
 
@@ -689,6 +691,7 @@ void print(const std::string& file, pubsub::ArgParser& parser)
 	}
 
 	bool verbose = parser.GetBool("v");
+	int array_count = parser.GetDouble("a");
 
 	rucksack::MessageHeader const* hdr;
 	rucksack::SackChannelDetails const* def;
@@ -696,9 +699,9 @@ void print(const std::string& file, pubsub::ArgParser& parser)
 	{
 		if (verbose)
 		{
-			printf("timestamp: %" PRIu64 "\n", hdr->time);
+			printf("timestamp: %" PRIu64 ".%" PRIu64 "\n", hdr->time/1000000, hdr->time%1000000);
 		}
-		ps_deserialize_print(msg, &def->definition, 0, 0);
+		ps_deserialize_print(msg, &def->definition, array_count, 0);
 		printf("------------\n");
 	}
 
@@ -753,11 +756,11 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 
 	// Get the start time so we know when to start making the index and accepting chunks
 	const double req_start_time = parser.GetDouble("s");
-	const pubsub::Time start_time = pubsub::Time(header.start_time) + pubsub::Duration(req_start_time);
-
+	
 	const bool loop = parser.GetBool("l");
 
 	uint64_t last_time = 0;
+	uint64_t first_time = std::numeric_limits<uint64_t>::max();
 	// now iterate through each and every chunk
 	char op_code;
 	while (char* chunk_ptr = sack.read_block(op_code))
@@ -809,13 +812,7 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 				return;
 			}
 
-			// if the chunk is too new, ignore it
-			if (chunk->start_time < start_time.usec)
-			{
-				delete[] chunk_ptr;
-				continue;
-			}
-
+			first_time = std::min(chunk->start_time, first_time);
 			last_time = std::max(chunk->end_time, last_time);
 
 			chunks.push_back({ chunk_ptr, chunk_ptr + sizeof(rucksack::DataChunk) });
@@ -825,6 +822,8 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 			delete[] chunk_ptr;
 		}
 	}
+
+	const pubsub::Time start_time = pubsub::Time(first_time) + pubsub::Duration(req_start_time);
 
 	printf("Warning: this rucksack is unordered so playback may take a moment to begin..\n");
 
@@ -1054,6 +1053,11 @@ void print_help()
 
 int main(int argc, char** argv)
 {
+	/*argc = 3;
+	argv = new char* [3];
+	argv[1] = "info";
+	argv[2] = "recording.sack";*/
+
 	std::string verb = argc > 1 ? argv[1] : "";
 
 	pubsub::ArgParser parser;
@@ -1100,6 +1104,7 @@ int main(int argc, char** argv)
 	{
 		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
 		parser.AddMulti({ "v" }, "Print timestamps along with each message.", "false");
+		parser.AddMulti({ "a" }, "Maximum number of array elements to print. Set to 0 for unlimited.", "20");
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
