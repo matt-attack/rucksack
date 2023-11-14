@@ -46,6 +46,14 @@ bool Sack::open(const std::string& file)
 		return false;
 	}
 
+	if (header_.version < rucksack::constants::MinSupportedVersion || header_.version > rucksack::constants::CurrentVersion)
+	{
+		fclose(f_);
+        f_ = 0;
+
+		return false;
+	}
+
 	return true;
 }
 

@@ -187,6 +187,8 @@ inline void HandleMessage(Channel* channel, void* message, unsigned int size, pu
 	memcpy(chunk.data + chunk.current_position, message, size);
 	chunk.current_position += size;
 
+	channel->open_chunk_last_message_time.usec = now.usec;
+
 	free(message);
 }
 
@@ -303,6 +305,7 @@ void record(pubsub::ArgParser& parser)
 					rucksack::ConnectionHeader header;
 					header.header.op_code = rucksack::constants::ConnectionHeaderOp;
 					header.connection_id = chunk.channel->id;
+					header.flags = chunk.channel->topic.latched ? rucksack::constants::CHFLAG_LATCHED : 0;
 
 					char buf[1500];
 					int def_len = ps_serialize_message_definition(buf, &chunk.channel->sub.received_message_def);
@@ -683,22 +686,32 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		fclose(f);
 	}
 
+	unsigned int total = 0;
+	for (auto& details: channels)
+	{
+		total += details.count;
+	}
+
 	// Now print out the information
 	printf("path:       %s\n", file.c_str());
 	printf("version:    %u\n", header.version);
 	printf("timestamp:  %s\n", pubsub::Time(header.start_time).toString().c_str());
 
 	pubsub::Duration duration = pubsub::Time(last_time) - pubsub::Time(first_time);
-	printf("duration:   %lfs\n", duration.toSec());
-	printf("start:      %s\n", pubsub::Time(first_time).toString().c_str());
-	printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
+	if (total != 0)
+	{
+		printf("duration:   %lfs\n", duration.toSec());
+		printf("start:      %s\n", pubsub::Time(first_time).toString().c_str());
+		printf("end:        %s\n", pubsub::Time(last_time).toString().c_str());
+	}
+	else
+	{
+		printf("duration:   0s\n");
+		printf("start:      N/A\n");
+		printf("end:        N/A\n");
+	}
 	printf("chunks:     %u\n", n_chunks);
 
-	unsigned int total = 0;
-	for (auto& details: channels)
-	{
-		total += details.count;
-	}
 	printf("messages:   %u\n", total);
 
 	if (size > 1000 * 1000 * 1000)
@@ -751,6 +764,57 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	}
 }
 
+void print_chunks(const std::string& file, pubsub::ArgParser& parser)
+{
+	rucksack::Sack sack;
+	if (!sack.open(file))
+	{
+		printf("ERROR: Opening sack failed!\n");
+		return;
+	}
+
+    bool verbose = parser.GetBool("v");
+
+	auto header = sack.get_header();
+
+	// now iterate through each and every chunk
+	char op_code;
+	while (char* chunk_ptr = sack.read_block(op_code))
+	{
+		auto header = (rucksack::ChunkHeader*)chunk_ptr;
+		if (op_code == rucksack::constants::ConnectionHeaderOp)
+		{
+			rucksack::ConnectionHeader* chunk = (rucksack::ConnectionHeader*)chunk_ptr;
+
+			// read in the details about this topic/connection
+			const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
+
+			printf("Chunk Type: Connection Header\n");
+			printf("Chunk Lengh: %i bytes\n", header->length_bytes);
+			printf("Connection ID: %i\n", chunk->connection_id);
+			printf("Flags: %i\n", chunk->flags);
+			printf("Topic: %s\n", topic);
+		}
+		else if (op_code == rucksack::constants::DataChunkOp)
+		{
+			rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
+
+			printf("Chunk Type: Data\n");
+			printf("Chunk Lengh: %i bytes\n", header->length_bytes);
+			printf("Connection ID: %i\n", chunk->connection_id);
+			printf("Start: %s\n", pubsub::Time(chunk->start_time).toString().c_str());
+			printf("End: %s\n", pubsub::Time(chunk->end_time).toString().c_str());
+		}
+		else
+		{
+			printf("Chunk Type: Unknown\n");
+			printf("Chunk Lengh: %i bytes\n", header->length_bytes);
+		}
+		printf("------------\n");
+		delete[] chunk_ptr;
+	}
+}
+
 // todo print out in order
 void print(const std::string& file, pubsub::ArgParser& parser)
 {
@@ -758,6 +822,12 @@ void print(const std::string& file, pubsub::ArgParser& parser)
 	if (!sack.open(file))
 	{
 		printf("ERROR: Opening sack failed!\n");
+		return;
+	}
+
+	if (parser.GetBool("c"))
+	{
+		print_chunks(file, parser);
 		return;
 	}
 
@@ -902,6 +972,12 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		{
 			delete[] chunk_ptr;
 		}
+
+		// allow quick control-c
+		if (ps_okay() == false)
+		{
+			return;
+		}
 	}
 
 	const pubsub::Time start_time = pubsub::Time(first_time) + pubsub::Duration(req_start_time);
@@ -972,7 +1048,6 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 			// Ignore this message if it's before our start time
 			if (idx.time < start_time.usec)
 			{
-				//printf("dropping\n");
 				if (details->latched)
 				{
 					// its latched, keep track of the latest message less than start time
@@ -1021,13 +1096,15 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	if (parser.GetBool("p"))
 	{
 		// start paused
-		while (true)
-		{
-			// handle paused
-			printf("\r [PAUSED]  Sack Time: %13.6f   Duration: %.6f / %.6f               \r",
+		printf("\r [PAUSED]  Sack Time: %13.6f   Duration: %.6f / %.6f               \r",
 				pubsub::Time(start_time).toSec(),
 				(pubsub::Time(start_time) - start_time).toSec(),
 				length);
+
+		while (true)
+		{
+			// handle paused
+			
 			fflush(stdout);
 			ps_node_spin(&node);
 			ps_sleep(1);
@@ -1254,6 +1331,8 @@ int main(int argc, char** argv)
 		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
 		parser.AddMulti({ "v" }, "Print timestamps along with each message.", "false");
 		parser.AddMulti({ "a" }, "Maximum number of array elements to print. Set to 0 for unlimited.", "20");
+		parser.AddMulti({ "c" }, "Print chunks instead of messages.", "false");
+		
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();

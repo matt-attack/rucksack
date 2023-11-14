@@ -9,7 +9,8 @@ namespace constants
 	enum constants
 	{
 		MagicNumber = 0x12345678,
-		CurrentVersion = 2
+		MinSupportedVersion = 1,
+		CurrentVersion = 2,
 	};
 
 	enum op_codes
