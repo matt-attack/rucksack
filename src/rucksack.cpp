@@ -41,6 +41,14 @@ bool Sack::open(const std::string& file)
 		//bad file
 
 		fclose(f_);
+		f_ = 0;
+
+		return false;
+	}
+
+	if (header_.version < rucksack::constants::MinSupportedVersion || header_.version > rucksack::constants::CurrentVersion)
+	{
+		fclose(f_);
         f_ = 0;
 
 		return false;
@@ -52,7 +60,7 @@ bool Sack::open(const std::string& file)
 // returns the block id that we read in
 char* Sack::read_block(char& out_opcode)
 {
-	rucksack::BlockHeader bheader;
+	rucksack::ChunkHeader bheader;
 	if (fread(&bheader, 1, sizeof(bheader), f_) != sizeof(bheader))
 	{
 		return 0;
@@ -72,6 +80,13 @@ char* Sack::read_block(char& out_opcode)
 	// read in the whole chunk
 	char* chunk = new char[bheader.length_bytes];
 	fread(chunk, bheader.length_bytes, 1, f_);
+
+	// perform any in-place migrations
+	if (bheader.op_code == rucksack::constants::op_codes::ConnectionHeaderOp && header_.version == 1)
+	{
+		auto ch = (ConnectionHeaderV1*)chunk;
+		ch->hash = 0;// hash becomes flags, zero it out so we dont mess anything up
+	}
 	return chunk;
 }
 
@@ -245,7 +260,58 @@ void SackReader::handle_connection_header(const char* chunk)
 	details.definition = def;
 	details.topic = topic;
 	details.type = def.name;
+	details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) > 0);
 	channels_[header->connection_id] = details;
+}
+
+bool SackMigrator::Migrate(const std::string& dst, const std::string& src)
+{
+	Sack reader;
+	if (!reader.open(src))
+	{
+		return false;
+	}
+
+	if (reader.get_version() >= rucksack::constants::CurrentVersion)
+	{
+		return false;// already good
+	}
+
+	FILE* fout = fopen(dst.c_str(), "wb");
+	if (fout == 0)
+	{
+		return false;
+	}
+
+	// write header
+	auto copy = reader.get_header();
+	copy.version = rucksack::constants::CurrentVersion;
+	fwrite(&copy, sizeof(rucksack::Header), 1, fout);
+
+	char op_code;
+	while (char* chunk_ptr = reader.read_block(op_code))
+	{
+		// now write out each chunk
+		ChunkHeader* block = (ChunkHeader*)chunk_ptr;
+		if (op_code == rucksack::constants::ConnectionHeaderOp)
+		{
+			// now convert the chunk and write it to the bag
+			ConnectionHeader* old = (ConnectionHeader*)chunk_ptr;
+			old->flags = 0;// hash was replaced with flags, clear it out
+
+			fwrite(chunk_ptr, block->length_bytes, 1, fout);
+		}
+		else if (op_code == rucksack::constants::DataChunkOp)
+		{
+			// just write the chunk back to the bag
+			fwrite(chunk_ptr, block->length_bytes, 1, fout);
+		}
+		free(chunk_ptr);
+	}
+
+	fclose(fout);
+
+	return true;
 }
 
 }

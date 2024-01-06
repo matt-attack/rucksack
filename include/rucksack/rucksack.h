@@ -58,6 +58,18 @@ public:
 	{
 		return header_;
 	}
+
+	inline uint32_t get_version()
+	{
+		return header_.version;
+	}
+};
+
+class SackMigrator
+{
+public:
+
+	static bool Migrate(const std::string& dst, const std::string& src);
 };
 
 class SackWriter
@@ -96,7 +108,7 @@ class SackWriter
 				open_chunk.header.start_time = time.usec;
 				open_chunk.header.end_time = time.usec;
 				open_chunk.header.connection_id = id;
-				int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+				uint32_t buf_size = std::max<uint32_t>(size + sizeof(rucksack::MessageHeader), chunk_size);
 				open_chunk.data = new char[buf_size];
 				open_chunk.current_position = 0;
 			}
@@ -112,7 +124,7 @@ class SackWriter
 					open_chunk.header.start_time = time.usec;
 					open_chunk.header.end_time = time.usec;
 					open_chunk.header.connection_id = id;
-					int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+					uint32_t buf_size = std::max<uint32_t>(size + sizeof(rucksack::MessageHeader), chunk_size);
 					open_chunk.data = new char[buf_size];
 					open_chunk.current_position = 0;
 				}
@@ -200,7 +212,7 @@ public:
 			rucksack::ConnectionHeader header;
 			header.header.op_code = rucksack::constants::ConnectionHeaderOp;
 			header.connection_id = writer.id;
-			header.hash = def->hash;
+			header.flags = 0;// todo allow filling this out?
 
 			char buf[1500];
 			int def_len = ps_serialize_message_definition(buf, def);
@@ -248,6 +260,7 @@ struct SackChannelDetails
 	std::string topic;
 	std::string type;
 	ps_message_definition_t definition;
+	bool latched;
 };
 
 class SackReader
@@ -257,7 +270,7 @@ class SackReader
 	Sack data_;
 
 	char* current_chunk_;
-	unsigned int current_offset_;
+	uint64_t current_offset_;
 public:
 
 	~SackReader();
@@ -268,6 +281,11 @@ public:
 
     // Closes the file.
 	void close();
+
+	inline uint32_t get_version()
+	{
+		return data_.get_header().version;
+	}
 
     // Note that this does not read in time order. It reads out entire chunks at a time (same message).
 	const void* read(rucksack::MessageHeader const *& out_hdr, SackChannelDetails const*& out_info);
