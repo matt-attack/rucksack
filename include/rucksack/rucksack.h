@@ -108,7 +108,7 @@ class SackWriter
 				open_chunk.header.start_time = time.usec;
 				open_chunk.header.end_time = time.usec;
 				open_chunk.header.connection_id = id;
-				int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+				uint32_t buf_size = std::max<uint32_t>(size + sizeof(rucksack::MessageHeader), chunk_size);
 				open_chunk.data = new char[buf_size];
 				open_chunk.current_position = 0;
 			}
@@ -124,7 +124,7 @@ class SackWriter
 					open_chunk.header.start_time = time.usec;
 					open_chunk.header.end_time = time.usec;
 					open_chunk.header.connection_id = id;
-					int buf_size = std::max<int>(size + sizeof(rucksack::MessageHeader), chunk_size);
+					uint32_t buf_size = std::max<uint32_t>(size + sizeof(rucksack::MessageHeader), chunk_size);
 					open_chunk.data = new char[buf_size];
 					open_chunk.current_position = 0;
 				}
@@ -270,7 +270,7 @@ class SackReader
 	Sack data_;
 
 	char* current_chunk_;
-	unsigned int current_offset_;
+	uint64_t current_offset_;
 public:
 
 	~SackReader();

@@ -41,7 +41,7 @@ bool Sack::open(const std::string& file)
 		//bad file
 
 		fclose(f_);
-        f_ = 0;
+		f_ = 0;
 
 		return false;
 	}
