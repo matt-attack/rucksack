@@ -78,7 +78,7 @@ struct ConnectionHeaderV1
 	uint32_t connection_id;// incrementing id given to this connection
 	uint32_t hash;// message hash, unused
 	// then goes the topic name string
-	// the type name string 
+	// the type name string
 	// then the message definition
 };
 
@@ -100,8 +100,8 @@ struct Metadata
 {
 	ChunkHeader header;
 
-	uint32_t metadata_length;
-	char metadata[1];// can be any length, but this is convenient for access
+	uint32_t metadata_length;// length in bytes of the metadata, including any null-terminator
+	char metadata[1];// metadata string: can be any length, but this is convenient for access
 };
 
 // prefixes each message in the sack

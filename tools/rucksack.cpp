@@ -268,7 +268,7 @@ void record(pubsub::ArgParser& parser)
 
 	ps_node_system_query(&node);
 
-	node.adv_cb = [](const char* topic, const char* type, const char* node, const ps_advertise_req_t* data)
+	node.adv_cb = [](const char* topic, const char* type, const char* node, const ps_advertise_req_t* data, void* cb_data)
 	{
 		// todo check if we already have the topic
 		if (_topics.find(topic) != _topics.end())
@@ -393,7 +393,7 @@ void record(pubsub::ArgParser& parser)
 		pubsub::Time time;
 	};
 	static std::vector<TodoMsg> todo_msgs;
-	node.def_cb = [](const struct ps_message_definition_t* definition)
+	node.def_cb = [](const struct ps_message_definition_t* definition, void* cb_data)
 	{
 		for (int i = 0; i < todo_msgs.size(); i++)
 		{
@@ -437,7 +437,6 @@ void record(pubsub::ArgParser& parser)
 		options.preferred_transport = 1;// prefer tcp
 		options.skip = skip_factor;
 		options.queue_size = 0;
-		options.want_message_def = true;
 		options.allocator = 0;
 		options.ignore_local = false;
 		options.cb = [](void* message, unsigned int size, void* data, const ps_msg_info_t* info)
@@ -529,9 +528,8 @@ void record(pubsub::ArgParser& parser)
 
 			files.push_back(_current_sack_file);
 		}
-		// todo blocking
+		ps_node_wait(&node, 1);
 		ps_node_spin(&node);
-		ps_sleep(1);
 	}
 
 	recording = false;
@@ -592,7 +590,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 	rucksack::Sack sack;
 	if (!sack.open(file))
 	{
-		printf("ERROR: Opening sack failed!\n");
+		printf("ERROR: Opening sack '%s' failed!\n", file.c_str());
 		return;
 	}
 
@@ -893,8 +891,14 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 
 		void Release()
 		{
-			ps_free_message_definition(definition.get());
-			delete publisher;
+			if (definition.get())
+			{
+				ps_free_message_definition(definition.get());
+			}
+			if (publisher)
+			{
+				delete publisher;
+			}
 		}
 	};
 	std::vector<ChannelOutput> channels;
@@ -1288,13 +1292,13 @@ int main(int argc, char** argv)
 	if (verb == "record")
 	{
 		parser.SetUsage("Usage: rucksack record TOPIC... [OPTION...]\n\nRecords topics to a file.\n");
-		parser.AddMulti({ "a", "all" }, "Record all topics", "false");
-		parser.AddMulti({ "c", "chunk-size" }, "Chunk size in kB", "768");
-		parser.AddMulti({ "d", "duration" }, "Length in seconds to record", "-1.0");
-		parser.AddMulti({ "n" }, "Number of messages to record", "-1");
-		parser.AddMulti({ "o" }, "Name of sack file", "");
-		parser.AddMulti({ "split-size", "ss" }, "Start recording to a new sack file if this file size in MB is exceeded. Set to zero to not split based on size.", "0");
-		parser.AddMulti({ "split-duration", "sd" }, "Start recording to a new sack file if this time period in seconds is exceeded. Set to zer to not split based on duration.", "0");
+		parser.AddFlag({ "a", "all" }, "Record all topics");
+		parser.AddOption({ "c", "chunk-size" }, "Chunk size in kB", "768");
+		parser.AddOption({ "d", "duration" }, "Length in seconds to record", "-1.0");
+		parser.AddOption({ "n" }, "Number of messages to record", "-1");
+		parser.AddOption({ "o" }, "Name of sack file", "");
+		parser.AddOption({ "split-size", "ss" }, "Start recording to a new sack file if this file size in MB is exceeded. Set to zero to not split based on size.", "0");
+		parser.AddOption({ "split-duration", "sd" }, "Start recording to a new sack file if this time period in seconds is exceeded. Set to zer to not split based on duration.", "0");
 
 		parser.Parse(argv, argc, 1);
 
@@ -1303,11 +1307,16 @@ int main(int argc, char** argv)
 	else if (verb == "info")
 	{
 		parser.SetUsage("Usage: rucksack info FILE... [OPTION...]\n\nPrints information about rucksack files.\n");
-		parser.AddMulti({ "v" }, "Print additional info", "false");
+		parser.AddFlag({ "v" }, "Print additional info");
 
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
+		if (files.size() == 0)
+		{
+			printf("ERROR: Must provide at least one file.\n");
+			return 1;
+		}
 		for (auto file : files)
 		{
 			info(file, parser);
@@ -1316,26 +1325,36 @@ int main(int argc, char** argv)
 	else if (verb == "play")
 	{
 		parser.SetUsage("Usage: rucksack play FILE... [OPTION...]\n\nPlays back topics stored in rucksack files.\n");
-		parser.AddMulti({ "r" }, "Rate to play the rucksack at.", "1.0");
-		parser.AddMulti({ "s" }, "Offset to start playing the rucksack at.", "0.0");
-		parser.AddMulti({ "p" }, "Start playback paused.", "false");
-		parser.AddMulti({ "l" }, "If set, loop through the rucksack rather than stopping at the end.");
+		parser.AddOption({ "r" }, "Rate to play the rucksack at.", "1.0");
+		parser.AddOption({ "s" }, "Offset to start playing the rucksack at.", "0.0");
+		parser.AddFlag({ "p" }, "Start playback paused.");
+		parser.AddFlag({ "l", "loop" }, "If set, loop through the rucksack rather than stopping at the end.");
 
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
+		if (files.size() == 0)
+		{
+			printf("ERROR: Must provide at least one file.\n");
+			return 1;
+		}
 		play(files, parser);
 	}
 	else if (verb == "print")
 	{
 		parser.SetUsage("Usage: rucksack print FILE...\n\nPrints each message stored in rucksack files.");
-		parser.AddMulti({ "v" }, "Print timestamps along with each message.", "false");
-		parser.AddMulti({ "a" }, "Maximum number of array elements to print. Set to 0 for unlimited.", "20");
-		parser.AddMulti({ "c" }, "Print chunks instead of messages.", "false");
+		parser.AddFlag({ "v" }, "Print timestamps along with each message.");
+		parser.AddOption({ "a" }, "Maximum number of array elements to print. Set to 0 for unlimited.", "20");
+		parser.AddFlag({ "c" }, "Print chunks instead of messages.");
 		
 		parser.Parse(argv, argc, 1);
 
 		auto files = parser.GetAllPositional();
+		if (files.size() == 0)
+		{
+			printf("ERROR: Must provide at least one file.\n");
+			return 1;
+		}
 		for (auto file : files)
 		{
 			print(file, parser);
@@ -1345,8 +1364,8 @@ int main(int argc, char** argv)
 	{
 		// merges two sack files into one
 		parser.SetUsage("Usage: rucksack merge FILE... -o OUTPUT_FILE\n\nCombines the contents of multiple sack files into one.");
-		parser.AddMulti({ "o", "output" }, "Name for output combined sack file.", "");
-		parser.AddMulti({ "c", "chunk-size" }, "Chunk size to use for output sack file in kB.", "768");
+		parser.AddOption({ "o", "output" }, "Name for output combined sack file.", "");
+		parser.AddOption({ "c", "chunk-size" }, "Chunk size to use for output sack file in kB.", "768");
 		parser.Parse(argv, argc, 1);
 
 		merge(parser.GetAllPositional(), parser);
@@ -1354,11 +1373,16 @@ int main(int argc, char** argv)
 	else if (verb == "migrate")
 	{
 		parser.SetUsage("Usage: rucksack migrate FILE...\n\nMigrates the given rucksack file to the latest format.");
-		parser.AddMulti({"d"}, "Delete migrated sackfiles", "false");
+		parser.AddFlag({"d"}, "Delete migrated sackfiles");
 		parser.Parse(argv, argc, 1);
 
 		// migrate to the current bag version
 		auto files = parser.GetAllPositional();
+		if (files.size() == 0)
+		{
+			printf("ERROR: Must provide at least one file.\n");
+			return 1;
+		}
 		for (auto file : files)
 		{
 			std::string copy = file + ".new";

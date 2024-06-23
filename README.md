@@ -17,7 +17,7 @@ It also provides tools for recording, inspecting and playing back these files.
 ## Supported Platforms
 
 - Windows
-- Linux
+- Linux (tested on Ubuntu variants)
 
 ## Dependencies
 
@@ -27,6 +27,8 @@ It also provides tools for recording, inspecting and playing back these files.
 ## Install and Build Instructions
 
 First download and build [pubsub](https://github.com/matt-attack/pubsub).
+
+Then download and build rucksack:
 
 ```bash
 # Clone the repository and change directory into it
