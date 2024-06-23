@@ -11,16 +11,31 @@ It also provides tools for recording, inspecting and playing back these files.
 
 ## Features
 
+- Live data collection
 - Playback at various rates
-- 
 
 ## Supported Platforms
 
 - Windows
-- Linux
+- Linux (tested on Ubuntu variants)
 
 ## Dependencies
 
 - PubSub
 - C stdlib
 
+## Install and Build Instructions
+
+First download and build [pubsub](https://github.com/matt-attack/pubsub).
+
+Then download and build rucksack:
+
+```bash
+# Clone the repository and change directory into it
+git clone https://github.com/matt-attack/rucksack.git
+cd rucksack
+
+# Build the respository
+cmake .
+cmake --build .
+```

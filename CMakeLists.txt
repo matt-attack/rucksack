@@ -27,13 +27,13 @@ set_property(TARGET rucksack PROPERTY CXX_STANDARD 11)
 # Build examples
 add_executable(read_example "examples/read.cpp")
 target_include_directories(read_example PUBLIC include/)
-target_link_libraries(read_example librucksack pubsub pubsub_cpp)
+target_link_libraries(read_example librucksack pubsub pubsub_cpp pubsub_msgs)
 add_dependencies(read_example librucksack)
 set_property(TARGET read_example PROPERTY CXX_STANDARD 11)
 
 add_executable(write_example "examples/write.cpp")
 target_include_directories(write_example PUBLIC include/)
-target_link_libraries(write_example librucksack pubsub pubsub_cpp)
+target_link_libraries(write_example librucksack pubsub pubsub_cpp pubsub_msgs)
 add_dependencies(write_example librucksack)
 set_property(TARGET write_example PROPERTY CXX_STANDARD 11)
 

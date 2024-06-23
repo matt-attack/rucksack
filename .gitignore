@@ -14,6 +14,11 @@ Makefile
 *.suo
 *.user
 *.userosscache
+*.sln.docstates
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
 out/
 
 # User-specific files (MonoDevelop/Xamarin Studio)
