@@ -10,7 +10,7 @@ namespace constants
 	{
 		MagicNumber = 0x12345678,
 		MinSupportedVersion = 1,
-		CurrentVersion = 2,
+		CurrentVersion = 3,
 	};
 
 	enum op_codes
@@ -18,7 +18,8 @@ namespace constants
 		ConnectionHeaderOp = 0x01,
 		DataChunkOp = 0x02,
 		MetadataOp = 0x03,
-		OpCodeMax = 0x03
+		IndexChunkOp = 0x04,
+		OpCodeMax = 0x04
 	};
 
 	enum connection_header_flags
@@ -47,7 +48,13 @@ struct Header
 	// These first two fields must always remain the same or else 
 	uint32_t magic_number;// Identifies this as a sack file
 	uint32_t version;// Gives the format version. Right now only 1 and 2 are valid.
-	uint64_t start_time;// The time the recording of this sack file began
+
+	union {
+	  // if version <=2
+	  uint64_t start_time;// The time the recording of this sack file began
+	  // if version >=3
+	  uint64_t index_offset;// Offset in bytes from the start of the file to the index in the file, invalid if 0
+	};
 };
 
 // The header for each Chunk
@@ -66,7 +73,7 @@ struct ConnectionHeader
 	uint32_t connection_id;// incrementing id given to this connection
 	uint32_t flags;// stores things like latched
 	// then goes the topic name string
-	// the type name string 
+	// the type name string
 	// then the message definition
 };
 
@@ -89,8 +96,8 @@ struct DataChunk
 	ChunkHeader header;
 
 	uint32_t connection_id;// the connection_id of the header with the message info
-	uint64_t start_time;// start time of messages in this chunk
-	uint64_t end_time;// end time of messages in this chunk
+	uint64_t start_time;// start time of messages in this chunk in microseconds
+	uint64_t end_time;// end time of messages in this chunk in microseconds
 
 	// A list of MessageHeaders with attached messages follows
 };
@@ -110,5 +117,39 @@ struct MessageHeader
 	uint64_t time;
 	uint32_t length;// size of the message
 };
+
+// indicates the start of a chunk of messages in the file
+
+struct MessageIndex
+{
+  uint64_t timestamp; // timestamp of the message in microseconds
+  uint32_t chunk_index;// index of the chunk this message is contained in
+  uint32_t message_offset;// offset in bytes in the chunk to the message header
+};
+
+struct ChunkIndex
+{
+  uint64_t chunk_offset;// offset in bytes to chunk the in the file
+  uint32_t connection_id;// id of the connection header
+  uint32_t num_messages;// number of messages in this chunk
+};
+
+// op code: 0x04
+// optional chunk with index data
+struct IndexChunk
+{
+	ChunkHeader header;
+	
+	uint32_t num_chunks;
+	ChunkIndex chunk_offsets[0];
+
+  // message indicies given in time order
+  //uint32_t num_indices;// count of messages indexed below
+	//MessageIndex indices[0];
+	
+	//uint32_t num_connection_headers;// count of copied message headers
+	// connection headers go here
+};
+
 #pragma pack(pop)
 }

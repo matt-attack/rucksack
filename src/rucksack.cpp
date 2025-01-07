@@ -57,6 +57,54 @@ bool Sack::open(const std::string& file)
 	return true;
 }
 
+char* Sack::read_chunk(uint64_t offset)
+{
+  auto start = ftell(f_);
+  fseek(f_, offset, SEEK_SET);
+  
+  // read it!
+  rucksack::ChunkHeader bheader;
+	if (fread(&bheader, 1, sizeof(bheader), f_) != sizeof(bheader))
+	{
+	  fseek(f_, start, SEEK_SET);
+		return 0;
+	}
+	
+	// if we hit either of these cases, we probably hit the end
+	if (feof(f_) || bheader.op_code > rucksack::constants::OpCodeMax)
+	{
+	  fseek(f_, start, SEEK_SET);
+		return 0;
+	}
+	
+	// go back to start of chunk
+	fseek(f_, -sizeof(bheader), SEEK_CUR);
+
+	// read in the whole chunk
+	char* chunk = new char[bheader.length_bytes];
+	fread(chunk, bheader.length_bytes, 1, f_);
+	
+	fseek(f_, start, SEEK_SET);
+	return chunk;
+}
+
+char* Sack::read_index()
+{
+  if (header_.version < 3)
+  {
+    return 0;
+  }
+  
+  if (header_.index_offset == 0)
+  {
+    return 0;
+  }
+  
+  return read_chunk(header_.index_offset);
+  
+  // todo assert that it is the correct chunk type
+}
+
 // returns the block id that we read in
 char* Sack::read_block(char& out_opcode)
 {
@@ -127,7 +175,7 @@ bool SackWriter::create(const std::string& file, pubsub::Time start, uint32_t ch
 	rucksack::Header header;
 	header.magic_number = rucksack::constants::MagicNumber;
 	header.start_time = start.usec;
-	header.version = 1;
+	header.version = 3;
 	fwrite(&header, sizeof(header), 1, f_);
 
 	return true;
@@ -227,6 +275,11 @@ bool SackReader::get_next_chunk()
 			// we got data!
 			current_offset_ = sizeof(rucksack::DataChunk);// reset the offset
 			return true;
+		}
+		else if (op_code == rucksack::constants::IndexChunkOp)
+		{
+		  // ignore, we already read this (or dont care)
+		  delete[] current_chunk_;
 		}
 		else
 		{
