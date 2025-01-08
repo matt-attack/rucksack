@@ -113,13 +113,14 @@ struct Channel
 		open_chunk.current_position = 0;
 	}
 
-    void Reset()
-    {
-        written = false;
-        open_chunk.data = 0;
-        open_chunk.current_position = 0;
-    }
+  void Reset()
+  {
+    written = false;
+    open_chunk.data = 0;
+    open_chunk.current_position = 0;
+  }
 };
+
 std::vector<Channel*> _channels;
 uint32_t _channel_id = 0;
 FILE* _current_sack_file = 0;
@@ -129,7 +130,7 @@ inline void HandleMessage(Channel* channel, void* message, unsigned int size, pu
 {
 	// get and deserialize the messages
 
-		// check if we saved the channel, if not do that
+  // check if we saved the channel, if not do that
 	if (channel->written == false)
 	{
 		// now that we have message definition we can save the data in a chunk
@@ -562,7 +563,8 @@ void record(pubsub::ArgParser& parser)
 		ps_sub_destroy(&ch->sub);
 	}
 
-	// Close all the files we opened
+	// Close all the files we opened, saving an index for each
+	// Todo, maybe close when its finished
 	for (auto& file: files)
 	{
 		fclose(file);
@@ -594,7 +596,7 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		return;
 	}
 
-    bool verbose = parser.GetBool("v");
+  bool verbose = parser.GetBool("v");
 
 	auto header = sack.get_header();
 
@@ -608,70 +610,104 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		ps_message_definition_t definition;
 	};
 
+  // try the fast way
+  rucksack::SackIndexedReader reader;
+  
 	std::vector<ChannelInfo> channels;
-	// now iterate through each and every chunk
-	uint64_t last_time = 0;
-	uint64_t first_time = std::numeric_limits<uint64_t>::max();
-	unsigned int n_chunks = 0;
-	char op_code;
-	while (char* chunk_ptr = sack.read_block(op_code))
-	{
-		if (op_code == rucksack::constants::ConnectionHeaderOp)
-		{
-			rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)chunk_ptr;
+  uint64_t last_time = 0;
+  uint64_t first_time = std::numeric_limits<uint64_t>::max();
+  unsigned int n_chunks = 0;
+  if (reader.open(file))
+  {
+    auto& index = reader.index();
+    if (index.messages.size())
+    {
+      first_time = index.messages.front().timestamp;
+      last_time = index.messages.back().timestamp;
+    }
+    for (auto& c: index.channels)
+    {
+      ChannelInfo ci;
+      ci.topic = c.topic;
+      ci.type = c.type;
+      ci.count = 0;
+      ci.latched = c.latched;
+      ci.hash = c.definition.hash;
+      ci.definition = c.definition;
+      channels.push_back(ci);
+    }
+    for (auto& m: index.messages)
+    {
+      auto ci = m.chunk_index;
+      auto connection = index.chunks[ci].connection_id;
+      channels[connection].count++;
+    }
+    n_chunks = index.chunks.size();
+    reader.close();
+  }
+  else
+  {
+	  // now iterate through each and every chunk
+	  char op_code;
+	  while (char* chunk_ptr = sack.read_block(op_code))
+	  {
+		  if (op_code == rucksack::constants::ConnectionHeaderOp)
+		  {
+			  rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)chunk_ptr;
 
-			// read in the details about this topic/connection
-			const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
+			  // read in the details about this topic/connection
+			  const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
 
-			ChannelInfo details;
-			ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
-				&details.definition);
+			  ChannelInfo details;
+			  ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
+				  &details.definition);
 
-			// todo handle duplicate message definitions/channels when we playback multiple files
+			  // todo handle duplicate message definitions/channels when we playback multiple files
 
-			// insert this into our header list
-			if (header->connection_id >= channels.size())
-			{
-				channels.resize(header->connection_id + 1);
-			}
+			  // insert this into our header list
+			  if (header->connection_id >= channels.size())
+			  {
+				  channels.resize(header->connection_id + 1);
+			  }
 
-			details.topic = topic;
-			details.type = details.definition.name;
-			details.count = 0;
-			details.hash = details.definition.hash;
-			details.latched = (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0;
-			channels[header->connection_id] = details;
-		}
-		else if (op_code == rucksack::constants::DataChunkOp)
-		{
-			rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
-			n_chunks++;
-			//printf("Got data chunk\n");
+			  details.topic = topic;
+			  details.type = details.definition.name;
+			  details.count = 0;
+			  details.hash = details.definition.hash;
+			  details.latched = (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0;
+			  channels[header->connection_id] = details;
+		  }
+		  else if (op_code == rucksack::constants::DataChunkOp)
+		  {
+			  rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
+			  n_chunks++;
+			  //printf("Got data chunk\n");
 
-			if (chunk->connection_id >= channels.size())
-			{
-				printf("ERROR: Got data chunk with out-of-range channel id!");
-				return;
-			}
+			  if (chunk->connection_id >= channels.size())
+			  {
+				  printf("ERROR: Got data chunk with out-of-range channel id!");
+				  return;
+			  }
 
-			// todo maybe should use a map?
-			ChannelInfo* details = &channels[chunk->connection_id];
+			  // todo maybe should use a map?
+			  ChannelInfo* details = &channels[chunk->connection_id];
 
-			first_time = std::min(first_time, chunk->start_time);
-			last_time = std::max(last_time, chunk->end_time);
+			  first_time = std::min(first_time, chunk->start_time);
+			  last_time = std::max(last_time, chunk->end_time);
 
-			// now can go through each message in the chunk
-			int off = sizeof(rucksack::DataChunk);
-			while (off < chunk->header.length_bytes)
-			{
-				rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
+			  // now can go through each message in the chunk
+			  int off = sizeof(rucksack::DataChunk);
+			  while (off < chunk->header.length_bytes)
+			  {
+				  rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
 
-				details->count++;
+				  details->count++;
 
-				off += hdr->length + sizeof(rucksack::MessageHeader);
-			}
-		}
-		delete[] chunk_ptr;
+				  off += hdr->length + sizeof(rucksack::MessageHeader);
+			  }
+		  }
+		  delete[] chunk_ptr;
+	  }
 	}
 
 	// Quickly grab file size
@@ -771,7 +807,7 @@ void print_chunks(const std::string& file, pubsub::ArgParser& parser)
 		return;
 	}
 
-    bool verbose = parser.GetBool("v");
+  bool verbose = parser.GetBool("v");
 
 	auto header = sack.get_header();
 
@@ -855,14 +891,12 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 {
 	// todo handle multiple files
 	std::string file = files[0];
-	rucksack::Sack sack;
+	rucksack::SackIndexedReader sack;
 	if (!sack.open(file))
 	{
 		printf("ERROR: Opening sack failed!\n");
 		return;
 	}
-
-	auto header = sack.get_header();
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
@@ -882,12 +916,11 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	struct ChannelOutput
 	{
 		std::shared_ptr<char[]> topic;
-		std::string type;
 		std::shared_ptr<ps_message_definition_t> definition;
 		ps_pub_t* publisher;
-
-		bool latched;
-		MessageIndex latched_message;
+		
+		bool latch;
+		int latch_index;
 
 		void Release()
 		{
@@ -902,187 +935,101 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		}
 	};
 	std::vector<ChannelOutput> channels;
-
-	struct ChunkInfo
+	
+	auto& index = sack.index();
+	
+	if (index.messages.size() == 0)
 	{
-		const char* block;
-		char* offset;
-	};
-	std::vector<ChunkInfo> chunks;
+	  printf("WARNING: File contains no messages\n");
+	  return;
+	}
 
 	// Get the start time so we know when to start making the index and accepting chunks
 	const double req_start_time = parser.GetDouble("s");
 	
 	const bool loop = parser.GetBool("l");
 
-	uint64_t last_time = 0;
-	uint64_t first_time = std::numeric_limits<uint64_t>::max();
-	// now iterate through each and every chunk
-	char op_code;
-	while (char* chunk_ptr = sack.read_block(op_code))
-	{
-		// now lets see about the chunk
-		if (op_code == rucksack::constants::ConnectionHeaderOp)
-		{
-			rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)chunk_ptr;
-
-			// read in the details about this topic/connection
-			const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
-
-			ps_message_definition_t def;
-			ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1], &def);
-
-			// todo handle duplicate message definitions/channels when we playback multiple files
-
-			// insert this into our header list
-			if (header->connection_id >= channels.size())
-			{
-				channels.resize(header->connection_id + 1);
-			}
-
-			// todo message definition leaks
-			ChannelOutput details;
-			// todo properly free the definition
-			details.definition = std::make_shared<ps_message_definition_t>(def);
-			details.topic = std::shared_ptr<char[]>(new char[strlen(topic) + 1]);
-			strcpy(details.topic.get(), topic);
-			details.type = def.name;
-			details.publisher = new ps_pub_t;
-			details.latched_message.ptr = 0;
-			details.latched_message.time = 0;
-			details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) != 0);
-			// create the publisher
-			ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, details.latched);
-			channels[header->connection_id] = details;
-
-			delete[] chunk_ptr;
-		}
-		else if (op_code == rucksack::constants::DataChunkOp)
-		{
-			rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
-
-			if (chunk->connection_id >= channels.size())
-			{
-				printf("ERROR: Got data chunk with out-of-range channel id!");
-				return;
-			}
-
-			first_time = std::min(chunk->start_time, first_time);
-			last_time = std::max(chunk->end_time, last_time);
-
-			chunks.push_back({ chunk_ptr, chunk_ptr + sizeof(rucksack::DataChunk) });
-		}
-		else
-		{
-			delete[] chunk_ptr;
-		}
-
-		// allow quick control-c
-		if (ps_okay() == false)
-		{
-			return;
-		}
-	}
+	uint64_t first_time = index.messages.front().timestamp;
+	uint64_t last_time = index.messages.back().timestamp;	
 
 	const pubsub::Time start_time = pubsub::Time(first_time) + pubsub::Duration(req_start_time);
 	const double length = (pubsub::Time(last_time) - start_time).toSec();
 
-	if (req_start_time > length)
+	if (start_time.usec > last_time)
 	{
 		printf("Start time is past end of sackfile.\n");
-		
-		for (int i = 0; i < chunks.size(); i++)
-		{
-			delete[] chunks[i].block;
-		}
 
 		ps_node_destroy(&node);
 
-    	// Free the channel infos
-    	for (auto& info: channels)
-    	{
-        	info.Release();
-    	}
 		return;
 	}
 	
-	printf("Warning: this rucksack is unordered so playback may take a moment to begin..\n");
-
-	// okay, lets build an index for playing this back...
-	// sort chunks by start time  (should already be in order honestly...)
-	std::sort(chunks.begin(), chunks.end(),
-		[](const ChunkInfo& a, const ChunkInfo& b) -> bool
-		{
-			const rucksack::DataChunk* header_a = (const rucksack::DataChunk*)a.block;
-			const rucksack::DataChunk* header_b = (const rucksack::DataChunk*)b.block;
-			return header_a->start_time < header_b->start_time;
-		});
-
-	// now build index by looping over chunks
-	std::vector<MessageIndex> index;
-	index.reserve(1000000);// should be good enough for anyone
-	for (int i = 0; i < chunks.size(); i++)
+	// build all the channels
+	int i = 0;
+	for (auto& ch: index.channels)
 	{
-		const char* chunk_ptr = chunks[i].block;
-
-		const rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
-
-		// todo maybe should use a map?
-		ChannelOutput* details = &channels[chunk->connection_id];
-
-		// now can go through each message in the chunk
-		int off = sizeof(rucksack::DataChunk);
-		while (off < chunk->header.length_bytes)
+		// todo handle duplicate message definitions/channels when we playback multiple files
+    // todo some of these could be invalid?
+    
+		// insert this into our header list
+		auto connection_id = i;// todo is the best way to do it?
+		if (connection_id >= channels.size())
 		{
-			const rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
-			const char* data = &chunk_ptr[off + sizeof(rucksack::MessageHeader)];
-
-			if (ps_okay() == false)
-			{
-				return;
-			}
-
-			MessageIndex idx;
-			idx.ptr = &chunk_ptr[off];
-			idx.time = hdr->time;
-			idx.channel = details;
-
-			off += hdr->length + sizeof(rucksack::MessageHeader);
-
-			// Ignore this message if it's before our start time
-			if (idx.time < start_time.usec)
-			{
-				if (details->latched)
-				{
-					// its latched, keep track of the latest message less than start time
-					if (idx.time >= details->latched_message.time)
-					{
-						details->latched_message = idx;
-					}
-				}
-
-				continue;
-			}
-			index.push_back(idx);
+			channels.resize(connection_id + 1);
 		}
+
+		// todo message definition leaks
+		ChannelOutput details;
+		// todo properly free the definition
+		details.definition = std::make_shared<ps_message_definition_t>(ch.definition);
+		details.topic = std::shared_ptr<char[]>(new char[ch.topic.length() + 1]);
+		strcpy(details.topic.get(), ch.topic.c_str());
+		details.publisher = new ps_pub_t;
+		details.latch = ch.latched;
+		details.latch_index = -1;
+		// create the publisher
+		ps_node_create_publisher(&node, details.topic.get(), details.definition.get(), details.publisher, ch.latched);
+		channels[connection_id] = details;
+		i++;
 	}
-
-	// I guess lets just sort by time?
-	std::sort(index.begin(), index.end(),
-		[](const MessageIndex& a, const MessageIndex& b) -> bool
-		{
-			return a.time < b.time;
-		});
-
-	printf("Done sorting...\n");
+	
+	std::vector<ChannelOutput*> msg_channels;
+	int first_message_index = -1;
+	for (auto& msg: index.messages)
+	{
+	  auto cid = index.chunks[msg.chunk_index].connection_id;
+	  auto channel = &channels[cid];
+	  if (msg.timestamp >= start_time.usec)
+	  {
+	    if (first_message_index < 0)
+	    {
+	      first_message_index = msg_channels.size();
+	    }
+	  }
+	  else
+	  {
+	    // check for latched
+	    if (channel->latch)
+	    {
+	      channel->latch_index = msg_channels.size();
+	    }
+	  }
+	  // build a list of channels
+	  msg_channels.push_back(channel);
+	}
 
 	// Publish any latched topics that happen before start time
 	for (const auto& channel: channels)
 	{
-		if (channel.latched_message.ptr)
+		if (channel.latch && channel.latch_index >= 0)
 		{
-			rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)channel.latched_message.ptr;
-			const char* data = channel.latched_message.ptr + sizeof(rucksack::MessageHeader);
+		  // find the latched message and publish it
+		  sack.seek(channel.latch_index);
+		  
+		  rucksack::MessageHeader const* hdr;
+	    rucksack::SackChannelDetails const* info;
+
+		  const void* data = sack.read(hdr, info);
 			ps_msg_t msg;
 			ps_msg_alloc(hdr->length, 0, &msg);
 			memcpy(ps_get_msg_start(msg.data), data, hdr->length);
@@ -1091,7 +1038,28 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 	}
 
 	// give the node a bit to advertise
-	wait(&node);
+	printf("Waiting for connections...\n\n");
+	uint64_t start = GetTimeMs();
+	uint64_t delay = parser.GetDouble("w")*1000;
+	while (ps_okay() && start + delay > GetTimeMs())
+	{
+		ps_node_wait(&node, 100);
+		ps_node_spin(&node);
+
+		// make sure everything has a subscriber
+		bool done = true;
+		for (const auto& channel: channels)
+		{
+			if (ps_pub_get_subscriber_count(channel.publisher) == 0)
+			{
+				done = false;
+				break;
+			}
+		}
+		if (done) break;
+	}
+	printf("Done waiting for connections...\n\n");
+	//wait(&node);
 
 	const double time_scale = parser.GetDouble("r");
 	const double inv_time_scale = 1.0 / time_scale;
@@ -1119,16 +1087,33 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 			}
 		}
 	}
+	
+	// seek to the start message
+	sack.seek(first_message_index);
 
 	pubsub::Time real_begin = pubsub::Time::now();
-	// now lets start publishing each message
-	for (int i = 0; i < index.size(); i++)
+
+	rucksack::MessageHeader const* hdr;
+	rucksack::SackChannelDetails const* info;
+	uint64_t message_idx = 0;
+	while (true)
 	{
-		rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)index[i].ptr;
-		const char* data = index[i].ptr + sizeof(rucksack::MessageHeader);
+		const void* data = sack.read(hdr, info);
+		if (data == 0)
+		{
+		  // if in loop mode, restart
+		  if (loop)
+		  {
+		    sack.seek(first_message_index);
+		    message_idx = 0;
+		    continue;
+		  }
+		  break;
+		}
 
 		if (ps_okay() == false)
 		{
+		  printf("\n");
 			return;
 		}
 
@@ -1146,6 +1131,7 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 
 				if (ps_okay() == false)
 				{
+				  printf("\n");
 					return;
 				}
 			}
@@ -1155,8 +1141,9 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		ps_msg_t msg;
 		ps_msg_alloc(hdr->length, 0, &msg);
 		memcpy(ps_get_msg_start(msg.data), data, hdr->length);
-		ps_pub_publish(index[i].channel->publisher, &msg);
-
+		ps_pub_publish(msg_channels[message_idx]->publisher, &msg);
+    message_idx++;
+    
 		// todo spin less often
 		ps_node_spin(&node);
 
@@ -1187,18 +1174,6 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 				}
 			}
 		}
-
-		// if in loop mode, go back to beginning at the end
-		if (loop && i == index.size() - 1)
-		{
-			i = 0;
-			real_begin = pubsub::Time::now();
-		}
-	}
-
-	for (int i = 0; i < chunks.size(); i++)
-	{
-		delete[] chunks[i].block;
 	}
 
 	ps_node_destroy(&node);
@@ -1268,6 +1243,17 @@ void merge(std::vector<std::string> files, pubsub::ArgParser& parser)
 	osack.close();
 }
 
+void reindex(const std::string& file)
+{
+  // okay, lets do this in two passes
+  
+  // one to form an index
+  
+  // then sort the index
+  
+  // then write the new file using the index
+}
+
 void print_help()
 {
 	printf("Usage: rucksack <verb> (arg1) (arg2) ...\n"
@@ -1275,7 +1261,8 @@ void print_help()
 		"   info (file names)\n"
 		"   play (file names)\n"
 		"   print (file names)\n"
-		"   record (topic name)\n");
+		"   record (topic name)\n"
+		"   reindex (file names)\n");
 }
 
 int main(int argc, char** argv)
@@ -1329,6 +1316,7 @@ int main(int argc, char** argv)
 		parser.AddOption({ "s" }, "Offset to start playing the rucksack at.", "0.0");
 		parser.AddFlag({ "p" }, "Start playback paused.");
 		parser.AddFlag({ "l", "loop" }, "If set, loop through the rucksack rather than stopping at the end.");
+		parser.AddOption({"w", "wait"}, "Maximum time to wait for connections at the start.", "10.0");
 
 		parser.Parse(argv, argc, 1);
 
@@ -1369,6 +1357,24 @@ int main(int argc, char** argv)
 		parser.Parse(argv, argc, 1);
 
 		merge(parser.GetAllPositional(), parser);
+	}
+	else if (verb == "reindex")
+	{
+	  // resave the data
+	  parser.SetUsage("Usage: rucksack reindex FILE...\n\nAdd an index to a file that may be missing one.");
+		
+		parser.Parse(argv, argc, 1);
+
+		auto files = parser.GetAllPositional();
+		if (files.size() == 0)
+		{
+			printf("ERROR: Must provide at least one file.\n");
+			return 1;
+		}
+		for (auto file : files)
+		{
+			reindex(file);
+		}
 	}
 	else if (verb == "migrate")
 	{

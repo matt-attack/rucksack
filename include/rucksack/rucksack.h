@@ -270,31 +270,32 @@ public:
 
 	~SackWriter();
 
-    // Creates and opens a bag file at the given location for writing
+  // Creates and opens a bag file at the given location for writing
 	bool create(const std::string& file,
                 pubsub::Time start = pubsub::Time::now(),
                 uint32_t chunk_size = 1024*1000);
 
-    // Writes a single message to the bag file
+  // Writes a single message to the bag file
 	template <class T>
-	void write_message(const std::string& topic, const T& message, pubsub::Time time = pubsub::Time::now())
+	void write_message(const std::string& topic, const T& message, pubsub::Time time = pubsub::Time::now(), bool latched = false)
 	{
     const ps_message_definition_t* def = T::GetDefinition();
     ps_msg_t msg_enc = message.Encode();
-    write_message(topic, msg_enc, def, time);
+    write_message(topic, msg_enc, def, time, latched);
     free(msg_enc.data);
 	}
 
-    // Writes a single already encoded message to the bag file
-    // Returns if successful. Fails if there is a message definition mismatch for the topic.
-  bool write_message(const std::string& topic, const ps_msg_t& msg, const ps_message_definition_t* def, pubsub::Time time = pubsub::Time::now())
+  // Writes a single already encoded message to the bag file
+  // Returns if successful. Fails if there is a message definition mismatch for the topic.
+  bool write_message(const std::string& topic, const ps_msg_t& msg, const ps_message_definition_t* def, pubsub::Time time = pubsub::Time::now(), bool latched = false)
   {
-    return write_message(topic, ps_get_msg_start(msg.data), msg.len, def, time);
+    return write_message(topic, ps_get_msg_start(msg.data), msg.len, def, time, latched);
   }
 
   // Writes a single already encoded message to the bag file
   // Returns if successful. Fails if there is a message definition mismatch for the topic.
-  bool write_message(const std::string& topic, const void* msg, uint32_t msg_size, const ps_message_definition_t* def, pubsub::Time time = pubsub::Time::now())
+  bool write_message(const std::string& topic, const void* msg, uint32_t msg_size, const ps_message_definition_t* def,
+                     pubsub::Time time = pubsub::Time::now(), bool latched = false)
   {
     // if we havent had this topic before, create a channel
     auto iter = channels_.find(topic);
@@ -316,7 +317,7 @@ public:
 			rucksack::ConnectionHeader header;
 			header.header.op_code = rucksack::constants::ConnectionHeaderOp;
 			header.connection_id = writer.id;
-			header.flags = 0;// todo allow filling this out?
+			header.flags = latched ? rucksack::constants::CHFLAG_LATCHED : 0;// todo allow filling this out?
 
 			char buf[1500];
 			int def_len = ps_serialize_message_definition(buf, def);
@@ -443,7 +444,7 @@ struct SackChannelDetails
 {
 	std::string topic;
 	std::string type;
-	ps_message_definition_t definition;
+	ps_message_definition_t definition;// todo this leaks
 	bool latched;
 };
 
@@ -451,6 +452,7 @@ struct SackIndex
 {
   std::vector<MessageIndex> messages;
   std::vector<ChunkIndex> chunks;
+  std::vector<SackChannelDetails> channels;
 };
 
 class SackIndexedReader
@@ -461,11 +463,17 @@ class SackIndexedReader
   std::map<int, std::unique_ptr<char[]>> chunk_cache_;
 
   int msg_idx_ = 0;
+  int chunk_to_close_ = -1;
   
-  std::vector<SackChannelDetails> channels_;
 public:
 
   SackIndexedReader() {}
+  
+  const SackIndex& index()
+  {
+    // todo maybe generate at runtime if it doesnt exist? not sure its worth it but maybe good to put that code here
+    return index_;
+  }
   
   bool open(const std::string& file)
   {
@@ -503,7 +511,7 @@ public:
     
     // finally read our messages headers
     
-    int i = 0;
+    /*int i = 0;
     for (auto msg: index_.chunks)
     {
       printf("Chunk: %i Channel: %i %i messages at %li\n", i, msg.connection_id, msg.num_messages, msg.chunk_offset);
@@ -513,7 +521,7 @@ public:
     for (auto msg: index_.messages)
     {
       printf("Message: %li us chunk: %i offset: %i\n", msg.timestamp, msg.chunk_index, msg.message_offset);
-    }
+    }*/
     
     //handle each connection header
     auto hdrs_start = msgs_start + 4 + sizeof(MessageIndex)*num_messages;
@@ -522,7 +530,9 @@ public:
     for (int i = 0; i < num_hdrs; i++)
     {
       handle_connection_header(hdrs);
-      hdrs += 0;// todo
+      
+      rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)hdrs;
+      hdrs += header->header.length_bytes;
     }
     
     delete[] index;
@@ -535,7 +545,11 @@ public:
     data_.close();
   }
   
-  int chunk_to_close_ = -1;
+  void seek(int message_index)
+  {
+    msg_idx_ = message_index;
+  }
+  
   const void* read(rucksack::MessageHeader const*&out_hdr, SackChannelDetails const*& out_info)
   {
     // just go through the index
@@ -564,12 +578,12 @@ public:
     {
       current_chunk = iter->second.get();
     }
-    printf("%i chunks open\n", chunk_cache_.size());
+    //printf("%li chunks open\n", chunk_cache_.size());
 
 	  // okay, now we have a chunk, read from it
 	  rucksack::DataChunk* chunk = (rucksack::DataChunk*)current_chunk;
 
-	  if (chunk->connection_id >= channels_.size())
+	  if (chunk->connection_id >= index_.channels.size())
 	  {
 		  printf("ERROR: Got data chunk with out-of-range channel id!");
 		  return 0;
@@ -577,7 +591,7 @@ public:
 
 	  // todo maybe should use a map?
 	  auto current_offset = message.message_offset;
-	  SackChannelDetails* details = &channels_[chunk->connection_id];
+	  SackChannelDetails* details = &index_.channels[chunk->connection_id];
 
 	  //if (current_offset >= chunk->header.length_bytes)
 	  //{
@@ -614,9 +628,9 @@ public:
 	  // todo handle duplicate message definitions/channels
 
 	  // insert this into our header list
-	  if (header->connection_id >= channels_.size())
+	  if (header->connection_id >= index_.channels.size())
 	  {
-		  channels_.resize(header->connection_id + 1);
+		  index_.channels.resize(header->connection_id + 1);
 	  }
 
 	  ps_message_definition_t def;
@@ -627,7 +641,7 @@ public:
 	  details.topic = topic;
 	  details.type = def.name;
 	  details.latched = ((header->flags & rucksack::constants::CHFLAG_LATCHED) > 0);
-	  channels_[header->connection_id] = details;
+	  index_.channels[header->connection_id] = details;
   }
 };
 
