@@ -589,16 +589,21 @@ struct ChannelDetails
 void info(const std::string& file, pubsub::ArgParser& parser)
 {
 	// start by printing out list of topics, types and runtime
-	rucksack::Sack sack;
-	if (!sack.open(file))
+  rucksack::SackIndexedReader reader;
+	if (!reader.open(file))
 	{
 		printf("ERROR: Opening sack '%s' failed!\n", file.c_str());
 		return;
 	}
+	
+	if (!reader.has_index())
+	{
+	  printf("WARNING: Sack does not have index. This may take a moment.\n");
+	}
 
   bool verbose = parser.GetBool("v");
 
-	auto header = sack.get_header();
+	auto header = reader.get_header();
 
 	struct ChannelInfo
 	{
@@ -609,16 +614,12 @@ void info(const std::string& file, pubsub::ArgParser& parser)
 		bool latched;
 		ps_message_definition_t definition;
 	};
-
-  // try the fast way
-  rucksack::SackIndexedReader reader;
   
 	std::vector<ChannelInfo> channels;
   uint64_t last_time = 0;
   uint64_t first_time = std::numeric_limits<uint64_t>::max();
   unsigned int n_chunks = 0;
-  if (reader.open(file))
-  {
+
     auto& index = reader.index();
     if (index.messages.size())
     {
@@ -644,71 +645,6 @@ void info(const std::string& file, pubsub::ArgParser& parser)
     }
     n_chunks = index.chunks.size();
     reader.close();
-  }
-  else
-  {
-	  // now iterate through each and every chunk
-	  char op_code;
-	  while (char* chunk_ptr = sack.read_block(op_code))
-	  {
-		  if (op_code == rucksack::constants::ConnectionHeaderOp)
-		  {
-			  rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)chunk_ptr;
-
-			  // read in the details about this topic/connection
-			  const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
-
-			  ChannelInfo details;
-			  ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
-				  &details.definition);
-
-			  // todo handle duplicate message definitions/channels when we playback multiple files
-
-			  // insert this into our header list
-			  if (header->connection_id >= channels.size())
-			  {
-				  channels.resize(header->connection_id + 1);
-			  }
-
-			  details.topic = topic;
-			  details.type = details.definition.name;
-			  details.count = 0;
-			  details.hash = details.definition.hash;
-			  details.latched = (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0;
-			  channels[header->connection_id] = details;
-		  }
-		  else if (op_code == rucksack::constants::DataChunkOp)
-		  {
-			  rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
-			  n_chunks++;
-			  //printf("Got data chunk\n");
-
-			  if (chunk->connection_id >= channels.size())
-			  {
-				  printf("ERROR: Got data chunk with out-of-range channel id!");
-				  return;
-			  }
-
-			  // todo maybe should use a map?
-			  ChannelInfo* details = &channels[chunk->connection_id];
-
-			  first_time = std::min(first_time, chunk->start_time);
-			  last_time = std::max(last_time, chunk->end_time);
-
-			  // now can go through each message in the chunk
-			  int off = sizeof(rucksack::DataChunk);
-			  while (off < chunk->header.length_bytes)
-			  {
-				  rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
-
-				  details->count++;
-
-				  off += hdr->length + sizeof(rucksack::MessageHeader);
-			  }
-		  }
-		  delete[] chunk_ptr;
-	  }
-	}
 
 	// Quickly grab file size
 	uint64_t size = 0;
@@ -897,6 +833,13 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		printf("ERROR: Opening sack failed!\n");
 		return;
 	}
+	
+	if (!sack.has_index())
+	{
+	  printf("WARNING: File has no index so this may take a moment to begin.\n");	
+	  sack.index();// forces the indexing to happen now rather than on start of playback
+	  printf("Finished indexing\n");
+	}
 
 	ps_node_t node;
 	ps_node_init(&node, "rucksack", "", true);
@@ -1059,7 +1002,6 @@ void play(const std::vector<std::string>& files, pubsub::ArgParser& parser)
 		if (done) break;
 	}
 	printf("Done waiting for connections...\n\n");
-	//wait(&node);
 
 	const double time_scale = parser.GetDouble("r");
 	const double inv_time_scale = 1.0 / time_scale;
@@ -1247,6 +1189,12 @@ void reindex(const std::string& file)
 {
   // okay, lets do this in two passes
   
+  //okay, so lets change the indexed reader to automatically generate an index if requested
+  
+  //then just read all the messages and immediately write them to the new file
+  
+  //that way even playback works fine without an index, just happens to run slower
+  
   // one to form an index
   
   // then sort the index
@@ -1260,6 +1208,9 @@ void print_help()
 		" Verbs:\n"
 		"   info (file names)\n"
 		"   play (file names)\n"
+		"   merge (file names)\n"
+		"   migrate (file names)\n"
+		"   reindex (file names)\n"
 		"   print (file names)\n"
 		"   record (topic name)\n"
 		"   reindex (file names)\n");

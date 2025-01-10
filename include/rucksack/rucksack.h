@@ -104,7 +104,7 @@ public:
 
   // Reads in the next chunk from the bag file.
 	// Returns a copy of the block id that we read in, or zero if finished. (Delete when done)
-	char* read_block(char& out_opcode);
+	char* read_block(char& out_opcode, uint64_t* offset = 0);
 
 	inline bool is_open()
 	{
@@ -458,52 +458,120 @@ struct SackIndex
 class SackIndexedReader
 {
   Sack data_;
+  
+  bool loaded_index_ = false;
   SackIndex index_;
   
   std::map<int, std::unique_ptr<char[]>> chunk_cache_;
 
   int msg_idx_ = 0;
   int chunk_to_close_ = -1;
+  bool had_index_;
+  std::unique_ptr<char[]> index_data_;
   
-public:
-
-  SackIndexedReader() {}
-  
-  const SackIndex& index()
+  void generate_index()
   {
-    // todo maybe generate at runtime if it doesnt exist? not sure its worth it but maybe good to put that code here
-    return index_;
+  	// now iterate through each and every chunk
+	  char op_code;
+	  uint64_t chunk_offset;
+	  while (char* chunk_ptr = data_.read_block(op_code, &chunk_offset))
+	  {
+		  if (op_code == rucksack::constants::ConnectionHeaderOp)
+		  {
+			  rucksack::ConnectionHeader* header = (rucksack::ConnectionHeader*)chunk_ptr;
+
+			  // read in the details about this topic/connection
+			  const char* topic = &chunk_ptr[sizeof(rucksack::ConnectionHeader)];
+
+			  SackChannelDetails details;
+			  ps_deserialize_message_definition(&chunk_ptr[sizeof(rucksack::ConnectionHeader) + strlen(topic) + 1],
+				  &details.definition);
+
+			  // todo handle duplicate message definitions/channels when we playback multiple files
+
+			  // insert this into our header list
+			  if (header->connection_id >= index_.channels.size())
+			  {
+				  index_.channels.resize(header->connection_id + 1);
+			  }
+
+			  details.topic = topic;
+			  details.type = details.definition.name;
+			  details.latched = (header->flags & rucksack::constants::CHFLAG_LATCHED) != 0;
+			  index_.channels[header->connection_id] = details;
+		  }
+		  else if (op_code == rucksack::constants::DataChunkOp)
+		  {
+			  rucksack::DataChunk* chunk = (rucksack::DataChunk*)chunk_ptr;
+			  //printf("Got data chunk\n");
+
+			  if (chunk->connection_id >= index_.channels.size())
+			  {
+				  printf("ERROR: Got data chunk with out-of-range channel id!");
+				  return;
+			  }
+			  
+			  int count = 0;
+
+			  // now can go through each message in the chunk and build the index for them
+			  int off = sizeof(rucksack::DataChunk);
+			  while (off < chunk->header.length_bytes)
+			  {
+				  rucksack::MessageHeader* hdr = (rucksack::MessageHeader*)&chunk_ptr[off];
+				  
+				  MessageIndex idx;
+				  idx.timestamp = hdr->time;
+				  idx.chunk_index = index_.chunks.size();
+				  idx.message_offset = off - sizeof(rucksack::DataChunk);
+				  index_.messages.push_back(idx);
+				  
+				  count++;
+
+				  off += hdr->length + sizeof(rucksack::MessageHeader);
+			  }
+			  
+			  ChunkIndex ci;
+			  ci.chunk_offset = chunk_offset;
+			  ci.connection_id = chunk->connection_id;
+			  ci.num_messages = count;
+			  index_.chunks.push_back(ci);
+		  }
+		  delete[] chunk_ptr;
+		  
+		  // sort messages by timestamp
+      std::sort(index_.messages.begin(), index_.messages.end(), [](MessageIndex a, MessageIndex b) {
+        return a.timestamp < b.timestamp;// todo is this the right order
+      });
+	  }
   }
   
-  bool open(const std::string& file)
+  void load_index()
   {
-    if (data_.is_open())
+    if (loaded_index_)
     {
-      data_.close();
-      index_.messages.clear();
-      index_.chunks.clear();
+      return;
     }
     
-    data_.open(file);
+    loaded_index_ = true;
     
-    auto index = data_.read_index();
-    if (index == 0)
+    if (!had_index_)
     {
-      printf("ERROR: no index found!\n");
-      data_.close();
-      return false;
+      // generate the index
+      generate_index();
+      return;
     }
     
     // read the index into a better structure
-    auto data = (IndexChunk*)index;
+    auto data = (IndexChunk*)index_data_.get();
     for (int i = 0; i < data->num_chunks; i++)
     {
       index_.chunks.push_back(data->chunk_offsets[i]);
     }
     
-    auto msgs_start = index + sizeof(ChunkHeader) + 4 + sizeof(ChunkIndex)*data->num_chunks;
+    auto msgs_start = index_data_.get() + sizeof(ChunkHeader) + 4 + sizeof(ChunkIndex)*data->num_chunks;
     uint32_t num_messages = *(uint32_t*)msgs_start;
     auto msgs = (MessageIndex*)(msgs_start+4);
+    // todo can probably memcpy
     for (int i = 0; i < num_messages; i++)
     {
       index_.messages.push_back(msgs[i]);
@@ -535,10 +603,55 @@ public:
       hdrs += header->header.length_bytes;
     }
     
-    delete[] index;
+    index_data_.reset();
+  }
+  
+public:
+
+  SackIndexedReader() {}
+  
+  const SackIndex& index()
+  {
+    load_index();
+    return index_;
+  }
+  
+  bool has_index() const
+  {
+    return had_index_;
+  }
+  
+  bool open(const std::string& file, bool require_index = false)
+  {
+    if (data_.is_open())
+    {
+      data_.close();
+      index_.messages.clear();
+      index_.chunks.clear();
+    }
     
+    data_.open(file);
+    
+    loaded_index_ = false;
+    auto index = data_.read_index();
+    if (index == 0)
+    { 
+      had_index_ = false;
+      
+      return true;
+    }
+    else
+    {
+      had_index_ = true;
+      index_data_.reset(index);
+    }
     return true;
   }
+  
+  inline const rucksack::Header& get_header()
+	{
+		return data_.get_header();
+	}
   
   void close()
   {
@@ -557,6 +670,8 @@ public:
     {
       return 0;
     }
+    
+    load_index();
     
     if (chunk_to_close_ != -1)
     {

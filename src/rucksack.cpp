@@ -106,8 +106,13 @@ char* Sack::read_index()
 }
 
 // returns the block id that we read in
-char* Sack::read_block(char& out_opcode)
+char* Sack::read_block(char& out_opcode, uint64_t* offset)
 {
+  if (offset)
+  {
+    *offset = ftell(f_);
+  }
+  
 	rucksack::ChunkHeader bheader;
 	if (fread(&bheader, 1, sizeof(bheader), f_) != sizeof(bheader))
 	{
