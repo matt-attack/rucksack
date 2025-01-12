@@ -660,18 +660,68 @@ public:
   
   void seek(int message_index)
   {
+    if (message_index != msg_idx_)
+    {
+      chunk_cache_.clear();// not the best but fine
+    }
     msg_idx_ = message_index;
   }
   
-  const void* read(rucksack::MessageHeader const*&out_hdr, SackChannelDetails const*& out_info)
+  struct Iterator
   {
+    int connection_id;
+    SackIndexedReader* reader;
+    rucksack::MessageHeader const* header;
+    rucksack::SackChannelDetails const* info;
+    
+    const void* next()
+    {
+      return reader->read(header, info, connection_id);
+    }
+  };
+  
+  // todo add time reader range
+  // Easy way to read all messages of a certain type
+  Iterator range(const std::string& topic = "")
+  {
+    Iterator it;
+    it.reader = this;
+    
+   	for (int stream_id = 0; stream_id < index_.channels.size(); stream_id++)
+   	{
+   	  if (index_.channels[stream_id].topic == topic)
+   	  {
+   	    it.connection_id = stream_id;
+   	    break;
+   	  }
+   	}
+   	seek(0);
+    return it;
+  }
+  
+  const void* read(rucksack::MessageHeader const*&out_hdr, SackChannelDetails const*& out_info, int id = -1)
+  {
+    load_index();
+    
     // just go through the index
     if (msg_idx_ >= index_.messages.size())
     {
       return 0;
     }
     
-    load_index();
+    if (id >= 0)
+    {
+      // skip irrelevant messages
+      while (index_.chunks[index_.messages[msg_idx_].chunk_index].connection_id != id)
+      {
+        msg_idx_++;
+        
+        if (msg_idx_ >= index_.messages.size())
+        {
+          return 0;
+        }
+      }
+    }
     
     if (chunk_to_close_ != -1)
     {

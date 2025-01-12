@@ -1187,19 +1187,36 @@ void merge(std::vector<std::string> files, pubsub::ArgParser& parser)
 
 void reindex(const std::string& file)
 {
-  // okay, lets do this in two passes
-  
-  //okay, so lets change the indexed reader to automatically generate an index if requested
-  
-  //then just read all the messages and immediately write them to the new file
-  
-  //that way even playback works fine without an index, just happens to run slower
-  
-  // one to form an index
-  
-  // then sort the index
-  
-  // then write the new file using the index
+  // Read every message in order, then write them back out
+  rucksack::SackIndexedReader sack;
+  if (!sack.open(file))
+  {
+    printf("ERROR: Opening sack failed!\n");
+    return;
+  }
+
+  if (sack.has_index())
+  {
+    printf("Sack already has index\n");
+    return;
+  }
+
+  rucksack::SackWriter writer;
+  if (!writer.create(file + ".indexed"))
+  {
+    printf("Failed to open new sack for writing.\n");
+    return;
+  }
+
+  // now just write every message
+  rucksack::MessageHeader const* hdr;
+  rucksack::SackChannelDetails const* info;
+  while (const void* data = sack.read(hdr, info))
+	{
+	  // save it!
+	  printf("message\n");
+	  writer.write_message(info->topic, data, hdr->length, &info->definition, hdr->time, info->latched);
+  }
 }
 
 void print_help()
